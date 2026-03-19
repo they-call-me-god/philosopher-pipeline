@@ -2,8 +2,16 @@ name: Philosopher Pipeline
 
 on:
   schedule:
-    - cron: "0 2 * * 1"   # Every Monday at 2am UTC
-  workflow_dispatch:        # Allow manual trigger from GitHub UI
+    - cron: "30 3 * * 2"  # Tue 9am IST
+    - cron: "30 6 * * 2"  # Tue 12pm IST
+    - cron: "30 5 * * 3"  # Wed 11am IST
+    - cron: "30 13 * * 3" # Wed 7pm IST
+    - cron: "30 6 * * 4"  # Thu 12pm IST
+    - cron: "30 13 * * 4" # Thu 7pm IST
+    - cron: "30 3 * * 5"  # Fri 9am IST
+    - cron: "30 6 * * 5"  # Fri 12pm IST
+    - cron: "30 4 * * 6"  # Sat 10am IST
+  workflow_dispatch:
 
 jobs:
   run-pipeline:
@@ -112,7 +120,7 @@ jobs:
           INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
           INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python pipeline.py --now
+        run: python pipeline.py --now --single
 
       - name: Save updated Instagram session
         if: always()

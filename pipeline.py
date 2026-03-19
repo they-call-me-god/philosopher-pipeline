@@ -51,7 +51,7 @@ FONT_PATH = BASE_DIR / "fonts" / "PlayfairDisplay-Regular.ttf"
 RUN_ID = time.strftime("%Y-%m-%dT%H%M%S")
 
 
-def main(upload_now: bool = False) -> None:
+def main(upload_now: bool = False, single: bool = False) -> None:
     global _upload_now
     _upload_now = upload_now
     # ── Pre-flight ────────────────────────────────────────────────────────────
@@ -88,6 +88,10 @@ def main(upload_now: bool = False) -> None:
     # ── Process each philosopher ──────────────────────────────────────────────
     generated: list[dict] = []
     used_songs_this_run: list[str] = []
+
+    if single:
+        philosophers = sorted(philosophers, key=lambda p: state.get_philosopher(p)["post_count"])[:1]
+        log.info("Running in --single mode. Selected %s", philosophers[0])
 
     for philosopher in philosophers:
         log.info("── %s ──", philosopher)
@@ -262,5 +266,6 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Philosopher Instagram Pipeline")
     parser.add_argument("--now", action="store_true", help="Upload immediately instead of scheduling")
+    parser.add_argument("--single", action="store_true", help="Process only the philosopher with the fewest posts")
     args = parser.parse_args()
-    main(upload_now=args.now)
+    main(upload_now=args.now, single=args.single)
