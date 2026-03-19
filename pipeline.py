@@ -36,8 +36,12 @@ log = logging.getLogger(__name__)
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
 VAULT_DIR = BASE_DIR.parent
-PHILOSOPHERS_FILE = VAULT_DIR / "philosophers.md"
-SONGS_FILE = VAULT_DIR / "songs.md"
+
+_local_philosophers = BASE_DIR / "philosophers.md"
+PHILOSOPHERS_FILE = _local_philosophers if _local_philosophers.exists() else VAULT_DIR / "philosophers.md"
+
+_local_songs = BASE_DIR / "songs.md"
+SONGS_FILE = _local_songs if _local_songs.exists() else VAULT_DIR / "songs.md"
 STATE_FILE = BASE_DIR / "state.json"
 OUTPUT_DIR = BASE_DIR / "output"
 CACHE_PHOTOS = BASE_DIR / "cache" / "photos"
