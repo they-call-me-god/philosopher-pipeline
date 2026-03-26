@@ -91,12 +91,10 @@ jobs:
         run: |
           cat > songs.md << 'SONGS'
           - https://www.youtube.com/watch?v=ao4RCon11eY  # Dark phonk drift, atmospheric, existential, crushing
-          - https://www.youtube.com/watch?v=W9xfRFDlZBk  # Dark phonk aggressive, cowbell-driven, menacing, dominant
           - https://www.youtube.com/watch?v=4hgyFPpfzgY  # Drift phonk, cinematic tension, dark, relentless
           - https://www.youtube.com/watch?v=eFqUUlQSsbo  # Dark phonk, aggressive, relentless, dominant
           - https://www.youtube.com/watch?v=LLtWpwzwotM  # Slowed reverb trap, heavy, crushing, sorrowful, nocturnal
           - https://www.youtube.com/watch?v=qV2uAK-SACI  # Slowed trap, ominous, heavy, nocturnal, brooding
-          - https://www.youtube.com/watch?v=mfGPNnYAVgI  # Slowed aesthetic, melancholic, cinematic drift, ethereal
           - https://www.youtube.com/watch?v=9vfKuNRbOaQ  # Slowed reverb, haunting, sorrowful, spiritual decay
           - https://www.youtube.com/watch?v=UceaB4D0jpo  # Slowed lofi trap, nostalgic, contemplative, drifting
           - https://www.youtube.com/watch?v=AswXiy8JCsI  # Hypnotic dark ambient, cinematic, eerie, cold void
@@ -104,15 +102,12 @@ jobs:
           - https://www.youtube.com/watch?v=_Xm1hmB0KCg  # Hypnotic eerie ambient, transformative, nocturnal, surreal
           - https://www.youtube.com/watch?v=NS9z2QHcZdY  # Cold cinematic orchestral, transformative, atmospheric, epic
           - https://www.youtube.com/watch?v=1rC9Wh4-RfQ  # Ethereal indie, nostalgic, cinematic, spiritual longing
-          - https://www.youtube.com/watch?v=4N3N1MlvVc4  # Ethereal lofi, contemplative, soft, nostalgic warmth
           - https://www.youtube.com/watch?v=EkHTsc9PU2A  # Melancholic atmospheric, sorrowful, emotional, drifting
           - https://www.youtube.com/watch?v=5qap5aO4i9A  # Lofi hip hop, chill, contemplative, study focus
           - https://www.youtube.com/watch?v=jfKfPfyJRdk  # Lofi beats, nostalgic, soft, peaceful afternoons
           - https://www.youtube.com/watch?v=OVh0bMNSFss  # Lofi phonk hybrid, contemplative, quirky, late night
-          - https://www.youtube.com/watch?v=_mUCHoX9bEE  # Emotional piano, sorrowful, spiritual, ethereal
           - https://www.youtube.com/watch?v=XqZsoesa55w  # Soft sad piano, nostalgic, emotional, contemplative
           - https://www.youtube.com/watch?v=NS8DPG62Fto  # Cold spare piano, mechanical, stoic grief, minimal
-          - https://www.youtube.com/watch?v=iFOtmUxEGTY  # Eerie ambient piano, surreal, anxious, cold spiritual
           SONGS
 
       - name: Run pipeline
