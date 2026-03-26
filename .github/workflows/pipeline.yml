@@ -74,7 +74,7 @@ jobs:
 
       - name: Restore Instagram session
         run: |
-          echo "${{ secrets.INSTAGRAM_SESSION }}" | base64 -d > session.json
+          echo "${{ secrets.INSTAGRAM_SESSION }}" | base64 -d > deepahhthinking.session
         continue-on-error: true
 
       - name: Download fonts
