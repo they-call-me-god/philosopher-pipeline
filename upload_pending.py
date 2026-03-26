@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-upload_pending.py — Download generated reels from GitHub Actions artifacts and upload to Instagram.
+upload_pending.py -- Download generated reels from GitHub Actions artifacts and upload to Instagram.
 
 Usage:
     python upload_pending.py
@@ -9,10 +9,9 @@ Run this locally whenever you want to push pending reels to Instagram.
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
-import tempfile
-import zipfile
 from pathlib import Path
 
 _DIR = Path(__file__).parent.resolve()
@@ -30,7 +29,7 @@ from uploader import upload_reel
 
 
 def _gh(*args) -> str:
-    r = subprocess.run(["gh", *args], capture_output=True, text=True, check=True)
+    r = subprocess.run(["gh", *args], capture_output=True, text=True, check=True, cwd=str(_DIR))
     return r.stdout.strip()
 
 
@@ -50,9 +49,9 @@ def main():
         run_id = run["databaseId"]
         created = run["createdAt"]
 
-        # Check if this run has a reel artifact
         try:
-            artifacts_json = _gh("api", f"repos/:owner/:repo/actions/runs/{run_id}/artifacts")
+            artifacts_json = _gh("api",
+                f"repos/they-call-me-god/philosopher-pipeline/actions/runs/{run_id}/artifacts")
             artifacts = json.loads(artifacts_json).get("artifacts", [])
         except subprocess.CalledProcessError:
             continue
@@ -65,57 +64,65 @@ def main():
             artifact_id = artifact["id"]
             artifact_name = artifact["name"]
 
-            print(f"\nRun {run_id} ({created}) — artifact: {artifact_name}")
+            print(f"\nRun {run_id} ({created}) - artifact: {artifact_name}")
 
-            with tempfile.TemporaryDirectory() as tmp:
-                zip_path = Path(tmp) / "reel.zip"
+            extract_dir = _DIR / "output" / f"pending-{run_id}"
+            extract_dir.mkdir(parents=True, exist_ok=True)
 
-                # Download artifact
-                print("  Downloading...")
+            # Download
+            print("  Downloading...")
+            subprocess.run(
+                ["gh", "run", "download", str(run_id),
+                 "--name", artifact_name,
+                 "--dir", str(extract_dir)],
+                check=True, capture_output=True, cwd=str(_DIR)
+            )
+
+            mp4_files = list(extract_dir.glob("*.mp4"))
+            if not mp4_files:
+                print("  No MP4 found - skipping.")
+                continue
+
+            mp4 = mp4_files[0]
+            jpg = mp4.with_suffix(".jpg")
+
+            # Re-encode to fix Linux ffmpeg codec differences
+            reencoded = mp4.with_name(mp4.stem + "_win.mp4")
+            enc = subprocess.run(
+                ["ffmpeg", "-y", "-i", str(mp4),
+                 "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                 "-c:a", "aac", "-b:a", "128k",
+                 "-movflags", "+faststart", str(reencoded)],
+                capture_output=True
+            )
+            upload_mp4 = reencoded if reencoded.exists() else mp4
+
+            # Caption from filename
+            slug = mp4.stem.rsplit("-", 1)[0]
+            philosopher = slug.replace("-", " ").title()
+            caption = (
+                f'"{philosopher}"\n\n'
+                f"#philosophy #quotes #wisdom #deepthoughts #philosophyquotes "
+                f"#mindset #existentialism #stoicism #motivation"
+            )
+
+            print(f"  Uploading {upload_mp4.name}...")
+            try:
+                upload_reel(str(upload_mp4), caption, str(jpg) if jpg.exists() else None)
+                print("  Uploaded!")
+                uploaded += 1
+
+                # Delete artifact to avoid re-uploading
                 subprocess.run(
-                    ["gh", "api", f"repos/:owner/:repo/actions/artifacts/{artifact_id}/zip",
-                     "--output", str(zip_path)],
-                    check=True, capture_output=True
+                    ["gh", "api", "--method=DELETE",
+                     f"repos/they-call-me-god/philosopher-pipeline/actions/artifacts/{artifact_id}"],
+                    capture_output=True, cwd=str(_DIR)
                 )
+                print("  Artifact deleted.")
+                shutil.rmtree(str(extract_dir), ignore_errors=True)
 
-                # Extract
-                extract_dir = Path(tmp) / "extracted"
-                extract_dir.mkdir()
-                with zipfile.ZipFile(zip_path) as z:
-                    z.extractall(extract_dir)
-
-                mp4_files = list(extract_dir.glob("*.mp4"))
-                if not mp4_files:
-                    print("  No MP4 found in artifact — skipping.")
-                    continue
-
-                mp4 = mp4_files[0]
-                jpg = mp4.with_suffix(".jpg")
-
-                # Build caption from filename (slug → philosopher name)
-                slug = mp4.stem.rsplit("-", 1)[0]  # remove timestamp
-                philosopher = slug.replace("-", " ").title()
-                caption = (
-                    f'"{philosopher}"\n\n'
-                    f"#philosophy #quotes #wisdom #deepthoughts #philosophyquotes "
-                    f"#mindset #existentialism #stoicism #motivation"
-                )
-
-                print(f"  Uploading {mp4.name}...")
-                try:
-                    upload_reel(str(mp4), caption, str(jpg) if jpg.exists() else None)
-                    print(f"  ✓ Uploaded!")
-                    uploaded += 1
-
-                    # Delete artifact so we don't re-upload it
-                    subprocess.run(
-                        ["gh", "api", "--method=DELETE",
-                         f"repos/:owner/:repo/actions/artifacts/{artifact_id}"],
-                        check=True, capture_output=True
-                    )
-                    print(f"  Artifact deleted.")
-                except Exception as e:
-                    print(f"  ✗ Upload failed: {e}")
+            except Exception as e:
+                print(f"  Upload failed: {e}")
 
     print(f"\nDone. {uploaded} reel(s) uploaded.")
 
