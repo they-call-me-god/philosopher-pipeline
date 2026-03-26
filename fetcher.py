@@ -1,7 +1,10 @@
 import hashlib
+import logging
 import time
 import requests
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 WIKIMEDIA_API = "https://commons.wikimedia.org/w/api.php"
@@ -125,11 +128,10 @@ PHILOSOPHER_VIBES = {
 }
 
 
-def fetch_quote(client, philosopher: str, used_quotes: list[str]) -> dict:
+def fetch_quote(philosopher: str, used_quotes: list[str]) -> dict:
     """
     Returns {"quote": str, "reframed": bool}
     Uses hardcoded curated quotes — no API key required.
-    `client` parameter kept for API compatibility but is unused.
     """
     all_quotes = PHILOSOPHER_QUOTES.get(philosopher.lower(), [])
     used_set = set(used_quotes)
@@ -144,17 +146,13 @@ def fetch_quote(client, philosopher: str, used_quotes: list[str]) -> dict:
 
 
 def match_song(
-    client,
     philosopher: str,
     quote: str,
     songs: list[dict],
     used_in_run: list[str],
     used_for_philosopher: list[str],
 ) -> str:
-    """
-    Returns the YouTube URL of the best vibe match using keyword overlap.
-    `client` parameter kept for API compatibility but is unused.
-    """
+    """Returns the YouTube URL of the best vibe match using keyword overlap."""
     last_3_used = set(used_for_philosopher[-3:])
     run_used = set(used_in_run)
 
@@ -242,8 +240,8 @@ def fetch_photo(philosopher: str, used_photos: list[str], cache_dir: Path) -> st
 
                 return str(cached)
 
-    except Exception:
-        pass  # fall through to cache fallback
+    except Exception as e:
+        log.warning("Wikimedia fetch failed for %s: %s — using cache fallback.", philosopher, e)
 
     # Fallback: reuse any cached photo for this philosopher (prefer unused ones)
     cached_photos = sorted(cache_dir.glob(f"{slug}-*.jpg"))
