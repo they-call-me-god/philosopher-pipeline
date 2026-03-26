@@ -176,7 +176,7 @@ def main(upload_now: bool = False, single: bool = False, generate_only: bool = F
             f'"{quote}"\n\n'
             f"— {philosopher}\n\n"
             f"#philosophy #quotes #wisdom #deepthoughts #philosophyquotes "
-            f"#mindset #existentialism #stoicism #motivation ##{slug_tag} "
+            f"#mindset #existentialism #stoicism #motivation #{slug_tag} "
             f"#thinkers #lifequotes #intellectuals #classicquotes #deepquotes"
         )
         jpg_path = str(Path(mp4_path).with_suffix(".jpg"))
