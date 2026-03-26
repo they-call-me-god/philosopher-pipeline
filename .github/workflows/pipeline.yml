@@ -110,11 +110,22 @@ jobs:
           - https://www.youtube.com/watch?v=NS8DPG62Fto  # Cold spare piano, mechanical, stoic grief, minimal
           SONGS
 
+      - name: Write YouTube cookies
+        run: |
+          if [ -n "${{ secrets.YOUTUBE_COOKIES }}" ]; then
+            echo "${{ secrets.YOUTUBE_COOKIES }}" | base64 -d > cookies.txt
+            echo "Cookies file written."
+          else
+            echo "No YOUTUBE_COOKIES secret set — yt-dlp will run without cookies."
+          fi
+        continue-on-error: true
+
       - name: Run pipeline
         env:
           INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
           INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          YOUTUBE_COOKIES_FILE: ${{ github.workspace }}/cookies.txt
         run: python pipeline.py --now --single
 
       - name: Save updated Instagram session

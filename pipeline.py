@@ -52,8 +52,6 @@ RUN_ID = time.strftime("%Y-%m-%dT%H%M%S")
 
 
 def main(upload_now: bool = False, single: bool = False) -> None:
-    global _upload_now
-    _upload_now = upload_now
     # ── Pre-flight ────────────────────────────────────────────────────────────
     for d in [OUTPUT_DIR, CACHE_PHOTOS, CACHE_AUDIO]:
         d.mkdir(parents=True, exist_ok=True)
@@ -100,7 +98,7 @@ def main(upload_now: bool = False, single: bool = False) -> None:
         # 1. Fetch quote
         log.info("  Fetching quote...")
         try:
-            quote_result = fetch_quote(None, philosopher, phil_state["used_quotes"])
+            quote_result = fetch_quote(philosopher, phil_state["used_quotes"])
         except Exception as e:
             log.warning("  Quote fetch failed for %s: %s — skipping.", philosopher, e)
             continue
@@ -112,7 +110,7 @@ def main(upload_now: bool = False, single: bool = False) -> None:
         log.info("  Matching song...")
         try:
             song_url = match_song(
-                None, philosopher, quote,
+                philosopher, quote,
                 songs=available_songs,
                 used_in_run=used_songs_this_run,
                 used_for_philosopher=phil_state["used_songs"],
@@ -195,7 +193,7 @@ def main(upload_now: bool = False, single: bool = False) -> None:
         log.warning("No reels generated. Exiting.")
         return
 
-    if _upload_now:
+    if upload_now:
         log.info("--now flag set: uploading %d reels immediately...", len(generated))
         for reel in generated:
             log.info("  Uploading %s...", reel["philosopher"])
@@ -235,18 +233,19 @@ def _download_audio(song_url: str, cache_dir: Path, state: StateManager) -> str 
     if cached.exists() and cached.stat().st_size > 0:
         return str(cached)
 
-    result = subprocess.run(
-        [
-            "yt-dlp",
-            "--format", "bestaudio",
-            "--extract-audio",
-            "--audio-format", "m4a",
-            "--output", str(cache_dir / f"{video_id}.%(ext)s"),
-            song_url,
-        ],
-        capture_output=True,
-        text=True,
-    )
+    cmd = [
+        "yt-dlp",
+        "--format", "bestaudio",
+        "--extract-audio",
+        "--audio-format", "m4a",
+        "--output", str(cache_dir / f"{video_id}.%(ext)s"),
+    ]
+    cookies_file = os.environ.get("YOUTUBE_COOKIES_FILE")
+    if cookies_file and Path(cookies_file).exists():
+        cmd += ["--cookies", cookies_file]
+    cmd.append(song_url)
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
         log.error("yt-dlp error for %s: %s", song_url, result.stderr[-300:])
@@ -259,8 +258,6 @@ def _download_audio(song_url: str, cache_dir: Path, state: StateManager) -> str 
     log.error("Audio file not found after yt-dlp for %s", song_url)
     return None
 
-
-_upload_now = False
 
 if __name__ == "__main__":
     import argparse
