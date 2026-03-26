@@ -44,6 +44,20 @@ jobs:
           key: audio-cache-${{ runner.os }}
           restore-keys: audio-cache-
 
+      - name: Seed audio cache from release
+        run: |
+          mkdir -p cache/audio
+          if [ "$(ls cache/audio/*.m4a 2>/dev/null | wc -l)" -lt "18" ]; then
+            echo "Audio cache sparse — seeding from release..."
+            gh release download audio-cache-v1 --pattern "audio-cache.zip" --output /tmp/audio-cache.zip
+            unzip -o /tmp/audio-cache.zip -d cache/audio
+            echo "Seeded $(ls cache/audio/*.m4a | wc -l) files"
+          else
+            echo "Audio cache already populated ($(ls cache/audio/*.m4a | wc -l) files)"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Restore photo cache
         uses: actions/cache@v4
         with:
