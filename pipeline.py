@@ -51,7 +51,7 @@ FONT_PATH = BASE_DIR / "fonts" / "PlayfairDisplay-Regular.ttf"
 RUN_ID = time.strftime("%Y-%m-%dT%H%M%S")
 
 
-def main(upload_now: bool = False, single: bool = False) -> None:
+def main(upload_now: bool = False, single: bool = False, generate_only: bool = False) -> None:
     # ── Pre-flight ────────────────────────────────────────────────────────────
     for d in [OUTPUT_DIR, CACHE_PHOTOS, CACHE_AUDIO]:
         d.mkdir(parents=True, exist_ok=True)
@@ -193,7 +193,11 @@ def main(upload_now: bool = False, single: bool = False) -> None:
         log.warning("No reels generated. Exiting.")
         return
 
-    if upload_now:
+    if generate_only:
+        log.info("--generate-only: %d reel(s) saved to output/, skipping upload.", len(generated))
+        for reel in generated:
+            log.info("  Ready: %s", reel["mp4_path"])
+    elif upload_now:
         log.info("--now flag set: uploading %d reels immediately...", len(generated))
         for reel in generated:
             log.info("  Uploading %s...", reel["philosopher"])
@@ -264,5 +268,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Philosopher Instagram Pipeline")
     parser.add_argument("--now", action="store_true", help="Upload immediately instead of scheduling")
     parser.add_argument("--single", action="store_true", help="Process only the philosopher with the fewest posts")
+    parser.add_argument("--generate-only", action="store_true", help="Generate reel but do not upload or schedule (saves to output/)")
     args = parser.parse_args()
-    main(upload_now=args.now, single=args.single)
+    main(upload_now=args.now, single=args.single, generate_only=args.generate_only)

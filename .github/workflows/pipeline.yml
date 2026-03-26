@@ -137,22 +137,19 @@ jobs:
           fi
         continue-on-error: true
 
-      - name: Run pipeline
+      - name: Run pipeline (generate only)
         env:
-          INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
-          INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           YOUTUBE_COOKIES_FILE: ${{ github.workspace }}/cookies.txt
-        run: python pipeline.py --now --single
+        run: python pipeline.py --generate-only --single
 
-      - name: Save updated Instagram session
+      - name: Upload reel artifact
+        uses: actions/upload-artifact@v4
         if: always()
-        run: |
-          if [ -f session.json ]; then
-            SESSION_B64=$(base64 -w 0 session.json)
-            echo "SESSION_B64=$SESSION_B64" >> $GITHUB_OUTPUT
-          fi
-        id: save-session
+        with:
+          name: reel-${{ github.run_number }}
+          path: output/
+          retention-days: 7
 
       - name: Save updated state cache
         uses: actions/cache/save@v4
