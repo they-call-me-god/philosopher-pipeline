@@ -168,6 +168,11 @@ def run_pipeline(single: bool = False) -> None:
 
     used_songs_this_run: list[str] = []
 
+    # Collect all quotes ever used across every philosopher to prevent duplicates
+    all_used_quotes: list[str] = []
+    for p in philosophers:
+        all_used_quotes.extend(state.get_philosopher(p)["used_quotes"])
+
     for philosopher in philosophers:
         phil_state = state.get_philosopher(philosopher)
         try:
@@ -175,7 +180,7 @@ def run_pipeline(single: bool = False) -> None:
 
             quote = fetch_quote(
                 philosopher=philosopher,
-                used_quotes=phil_state["used_quotes"],
+                used_quotes=all_used_quotes,
                 client=client,
             )
             log.info("Quote: %s", quote[:100])
@@ -230,6 +235,7 @@ def run_pipeline(single: bool = False) -> None:
                 ),
             )
 
+            all_used_quotes.append(quote)
             state.mark_posted(
                 philosopher=philosopher,
                 quote=quote,

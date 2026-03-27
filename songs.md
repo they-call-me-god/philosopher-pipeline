@@ -25,5 +25,4 @@ Format: `- <youtube-url>  # <vibe description>`
 - https://www.youtube.com/watch?v=-dhx7Hnu-wo  # Dark epic build, cinematic transformation, euphoric rise — Interworld "Metamorphosis"
 - https://www.youtube.com/watch?v=lJvRohYSrZM  # Ethereal dark ambient, slow build, cinematic — Metamorphosis alt
 - https://www.youtube.com/watch?v=kvHvxKHYMBA  # Mysterious dark cinematic, haunting, ominous
-- https://www.youtube.com/watch?v=_Xm1hmB0KCg  # Hypnotic eerie ambient, nocturnal, surreal
 - https://www.youtube.com/watch?v=NS9z2QHcZdY  # Interworld Metamorphosis — dark epic cinematic, viral aesthetic, transformative
