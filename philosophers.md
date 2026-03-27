@@ -1,0 +1,30 @@
+- Nietzsche
+- Albert Camus
+- Fyodor Dostoevsky
+- Blaise Pascal
+- Arthur Schopenhauer
+- Søren Kierkegaard
+- Jean-Paul Sartre
+- Simone de Beauvoir
+- Georg Wilhelm Friedrich Hegel
+- Immanuel Kant
+- David Hume
+- Marcus Aurelius
+- Plato
+- Socrates
+- Aristotle
+- Baruch Spinoza
+- René Descartes
+- Voltaire
+- Bertrand Russell
+- Ludwig Wittgenstein
+- Martin Heidegger
+- Hannah Arendt
+- Simone Weil
+- William James
+- Henry David Thoreau
+- Ralph Waldo Emerson
+- Epictetus
+- Seneca
+- Michel de Montaigne
+- Friedrich Schiller
