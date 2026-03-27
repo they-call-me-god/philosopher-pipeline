@@ -180,7 +180,15 @@ def run_pipeline(single: bool = False) -> None:
 
             upload_reel(
                 video_path=video_path,
-                caption=f'"{quote}"\n— {philosopher}\n\n#philosophy #quotes #wisdom #aesthetic',
+                caption=(
+                    f'"{quote}"\n— {philosopher}\n\n'
+                    f'#philosophy #quotes #wisdom #aesthetic #deepthoughts '
+                    f'#philosophyquotes #quotestoliveby #mindset #intellectuals '
+                    f'#ancient #stoic #stoicism #existentialism #deepquotes '
+                    f'#motivationalquotes #inspiration #philosophyoflife '
+                    f'#wordsofwisdom #quoteoftheday #thinkers #intellectualbeauty '
+                    f'#darkacademia #booktok #aesthetic #poetryofinstagram'
+                ),
             )
 
             state.mark_posted(
