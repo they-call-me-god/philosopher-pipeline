@@ -23,15 +23,21 @@ def fetch_quote(philosopher: str, used_quotes: list[str], client: Groq) -> str:
     """Generate an authentic-sounding quote in the philosopher's style."""
     used_block = "\n".join(f"- {q}" for q in used_quotes) if used_quotes else "(none)"
     prompt = (
-        f"Generate a single powerful, authentic-sounding philosophical quote "
-        f"in the style of {philosopher}. It should feel like something they actually "
-        f"wrote — concise, profound, characteristic.\n"
+        f"Write a quote in the style of {philosopher} that hits like these examples:\n"
+        f'- "Common sense is not so common." (Voltaire)\n'
+        f'- "There is infinite hope, but not for us." (Kafka)\n\n'
+        f"Rules:\n"
+        f"- Under 12 words\n"
+        f"- One sentence, no comma lists\n"
+        f"- Must have a twist, reversal, or paradox at the end\n"
+        f"- Sounds like {philosopher} — their actual themes and vocabulary\n"
+        f"- No clichés, no filler words like 'truly' or 'deeply'\n"
         f"Do NOT use these already-used quotes:\n{used_block}\n"
-        f"Reply with ONLY the quote text, no quotation marks, no attribution."
+        f"Reply with ONLY the quote. Nothing else."
     )
     response = client.chat.completions.create(
         model=MODEL,
-        max_tokens=200,
+        max_tokens=60,
         messages=[{"role": "user", "content": prompt}],
     )
     return response.choices[0].message.content.strip().strip('"').strip("'")
