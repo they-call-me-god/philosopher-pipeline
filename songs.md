@@ -26,4 +26,3 @@ Format: `- <youtube-url>  # <vibe description>`
 - https://www.youtube.com/watch?v=kvHvxKHYMBA  # Mysterious dark cinematic, haunting, ominous
 - https://www.youtube.com/watch?v=_Xm1hmB0KCg  # Hypnotic eerie ambient, nocturnal, surreal
 - https://www.youtube.com/watch?v=NS9z2QHcZdY  # Cold cinematic orchestral, atmospheric, epic
-- https://www.youtube.com/watch?v=EkHTsc9PU2A  # Melancholic atmospheric, sorrowful, drifting

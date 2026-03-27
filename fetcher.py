@@ -43,9 +43,20 @@ def fetch_quote(philosopher: str, used_quotes: list[str], client: Groq) -> str:
     return response.choices[0].message.content.strip().strip('"').strip("'")
 
 
+def _last_name(philosopher: str) -> str:
+    return philosopher.strip().split()[-1].lower()
+
+
 def fetch_portrait(philosopher: str, used_photos: list[str], cache_dir: Path) -> tuple[Path, str]:
     """Fetch a portrait from Wikimedia Commons. Returns (local_path, photo_id)."""
-    for query in [f"File:{philosopher} portrait", philosopher]:
+    last = _last_name(philosopher)
+    # Most specific → least specific queries; filename must contain the philosopher's last name
+    queries = [
+        f"File:{philosopher}",
+        f"{philosopher} portrait",
+        philosopher,
+    ]
+    for query in queries:
         params = {
             "action": "query",
             "format": "json",
@@ -54,13 +65,17 @@ def fetch_portrait(philosopher: str, used_photos: list[str], cache_dir: Path) ->
             "gsrnamespace": "6",
             "prop": "imageinfo",
             "iiprop": "url|mime",
-            "gsrlimit": "20",
+            "gsrlimit": "30",
         }
         resp = requests.get(WIKIMEDIA_API, params=params, headers=WIKIMEDIA_HEADERS, timeout=15)
         resp.raise_for_status()
         pages = resp.json().get("query", {}).get("pages", {}).values()
 
         for page in pages:
+            # Reject if the file title doesn't contain the philosopher's last name
+            title = page.get("title", "").lower()
+            if last not in title:
+                continue
             info = page.get("imageinfo", [{}])[0]
             url = info.get("url", "")
             mime = info.get("mime", "")
