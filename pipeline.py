@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-import anthropic
+from groq import Groq
 
 from input_parser import parse_philosophers, parse_songs
 from state import State
@@ -102,11 +102,11 @@ def run_pipeline(single: bool = False) -> None:
     CACHE_PHOTOS.mkdir(parents=True, exist_ok=True)
     CACHE_AUDIO.mkdir(parents=True, exist_ok=True)
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
-        sys.exit("[error] ANTHROPIC_API_KEY not set. Add it to .env")
+        sys.exit("[error] GROQ_API_KEY not set. Add it to .env")
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client = Groq(api_key=api_key)
     state = State(STATE_FILE)
 
     philosophers = parse_philosophers(PHILOSOPHERS_FILE)
