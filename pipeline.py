@@ -47,9 +47,13 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(BASE_DIR / "run_log.txt"),
+        logging.FileHandler(BASE_DIR / "run_log.txt", encoding="utf-8"),
     ],
 )
+# Fix Windows console encoding
+import sys
+if sys.stdout.encoding != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 log = logging.getLogger(__name__)
 
 
@@ -189,7 +193,7 @@ def run_pipeline(single: bool = False) -> None:
             log.info("✓ Posted for %s", philosopher)
 
         except Exception as exc:
-            log.error("✗ Failed for %s: %s", philosopher, exc, exc_info=True)
+            log.error("[FAILED] %s: %s", philosopher, exc, exc_info=True)
 
 
 def main() -> None:
