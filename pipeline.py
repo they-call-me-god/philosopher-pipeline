@@ -10,6 +10,7 @@ Usage:
   python pipeline.py --single   # run least-posted philosopher only
 """
 import argparse
+import hashlib
 import logging
 import os
 import subprocess
@@ -96,11 +97,19 @@ def _find_peak_offset(audio_path: Path, clip_len: int = 30, step: int = 5) -> in
     return best_offset
 
 
+def _video_id(song_url: str) -> str:
+    """Extract YouTube video ID from URL."""
+    import re
+    m = re.search(r"[?&]v=([\w-]+)", song_url)
+    return m.group(1) if m else hashlib.md5(song_url.encode()).hexdigest()[:12]
+
+
 def download_audio(song_url: str, output_dir: Path, filename: str) -> Path:
-    """Download full audio from YouTube via yt-dlp (cached)."""
-    output_path = output_dir / f"{filename}.m4a"
+    """Download full audio from YouTube via yt-dlp. Cache keyed by video ID."""
+    vid_id = _video_id(song_url)
+    output_path = output_dir / f"{vid_id}.m4a"
     if output_path.exists():
-        log.info("Audio cache hit: %s", filename)
+        log.info("Audio cache hit: %s (%s)", vid_id, filename)
         return output_path
     cmd = [
         "yt-dlp",
