@@ -72,9 +72,19 @@ def fetch_portrait(philosopher: str, used_photos: list[str], cache_dir: Path) ->
         pages = resp.json().get("query", {}).get("pages", {}).values()
 
         for page in pages:
-            # Reject if the file title doesn't contain the philosopher's last name
             title = page.get("title", "").lower()
+            # Must contain the philosopher's last name
             if last not in title:
+                continue
+            # Reject manuscripts, books, letters, signatures, maps, diagrams
+            bad_keywords = (
+                "manuscrit", "manuscript", "lettre", "letter", "signature",
+                "autograph", "handwriting", "book", "page", "text", "writing",
+                "map", "diagram", "chart", "tableau", "table", "schema",
+                "gravure", "engraving", "statue", "bust", "plaque", "monument",
+                "house", "birth", "home", "building", "church", "tomb", "grave",
+            )
+            if any(kw in title for kw in bad_keywords):
                 continue
             info = page.get("imageinfo", [{}])[0]
             url = info.get("url", "")

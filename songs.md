@@ -22,7 +22,8 @@ Format: `- <youtube-url>  # <vibe description>`
 - https://www.youtube.com/watch?v=pbMwTqkKSps  # Sparse sad pop, quiet devastation, emotional void — Billie Eilish "when the party's over"
 - https://www.youtube.com/watch?v=bpOSxM0rNPM  # Dark indie rock, brooding desire, cinematic tension — Arctic Monkeys "Do I Wanna Know"
 - https://www.youtube.com/watch?v=ZmDBbnmKpqQ  # Emotional pop, raw grief, cinematic heartbreak — Olivia Rodrigo "drivers license"
-- https://www.youtube.com/watch?v=AswXiy8JCsI  # Hypnotic dark ambient, eerie cold void — Øneheart "snowfall"
+- https://www.youtube.com/watch?v=-dhx7Hnu-wo  # Dark epic build, cinematic transformation, euphoric rise — Interworld "Metamorphosis"
+- https://www.youtube.com/watch?v=lJvRohYSrZM  # Ethereal dark ambient, slow build, cinematic — Metamorphosis alt
 - https://www.youtube.com/watch?v=kvHvxKHYMBA  # Mysterious dark cinematic, haunting, ominous
 - https://www.youtube.com/watch?v=_Xm1hmB0KCg  # Hypnotic eerie ambient, nocturnal, surreal
-- https://www.youtube.com/watch?v=NS9z2QHcZdY  # Cold cinematic orchestral, atmospheric, epic
+- https://www.youtube.com/watch?v=NS9z2QHcZdY  # Interworld Metamorphosis — dark epic cinematic, viral aesthetic, transformative
