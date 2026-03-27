@@ -57,8 +57,47 @@ if sys.stdout.encoding != "utf-8":
 log = logging.getLogger(__name__)
 
 
+def _find_peak_offset(audio_path: Path, clip_len: int = 30, step: int = 5) -> int:
+    """Return the start second of the loudest 30s window using ffmpeg volumedetect."""
+    # Get total duration
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
+        capture_output=True, text=True,
+    )
+    try:
+        total = float(probe.stdout.strip())
+    except ValueError:
+        return 0
+
+    # Skip first 15s (intros) and last 30s (outros)
+    search_start = 15
+    search_end = max(search_start + clip_len, int(total) - clip_len - 15)
+    if search_end <= search_start:
+        return search_start
+
+    best_offset, best_vol = search_start, -999.0
+    for start in range(search_start, search_end, step):
+        r = subprocess.run(
+            ["ffmpeg", "-ss", str(start), "-t", str(clip_len),
+             "-i", str(audio_path),
+             "-af", "volumedetect", "-f", "null", "-"],
+            capture_output=True, text=True,
+        )
+        for line in r.stderr.splitlines():
+            if "mean_volume" in line:
+                try:
+                    vol = float(line.split(":")[-1].strip().replace(" dB", ""))
+                    if vol > best_vol:
+                        best_vol, best_offset = vol, start
+                except ValueError:
+                    pass
+    log.info("Peak audio window: %ds (%.1f dB mean)", best_offset, best_vol)
+    return best_offset
+
+
 def download_audio(song_url: str, output_dir: Path, filename: str) -> Path:
-    """Download audio from YouTube via yt-dlp, trimmed to 30s."""
+    """Download full audio from YouTube via yt-dlp (cached)."""
     output_path = output_dir / f"{filename}.m4a"
     if output_path.exists():
         log.info("Audio cache hit: %s", filename)
@@ -66,7 +105,6 @@ def download_audio(song_url: str, output_dir: Path, filename: str) -> Path:
     cmd = [
         "yt-dlp",
         "-x", "--audio-format", "m4a",
-        "--postprocessor-args", "ffmpeg:-t 30",
         "-o", str(output_path),
         "--no-playlist",
         song_url,
@@ -78,11 +116,12 @@ def download_audio(song_url: str, output_dir: Path, filename: str) -> Path:
 
 
 def create_video(image_path: Path, audio_path: Path, output_path: Path, duration: int = 30) -> Path:
-    """Combine still image + audio into a 30s MP4 via FFmpeg."""
+    """Combine still image + best 30s of audio into an MP4 via FFmpeg."""
+    start = _find_peak_offset(audio_path, clip_len=duration)
     cmd = [
         "ffmpeg", "-y",
         "-loop", "1", "-i", str(image_path),
-        "-i", str(audio_path),
+        "-ss", str(start), "-t", str(duration), "-i", str(audio_path),
         "-c:v", "libx264", "-tune", "stillimage",
         "-c:a", "aac", "-b:a", "192k",
         "-pix_fmt", "yuv420p",
