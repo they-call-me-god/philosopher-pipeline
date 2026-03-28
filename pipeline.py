@@ -233,7 +233,7 @@ def run_pipeline(single: bool = False) -> None:
                 output_path=OUTPUT_DIR / f"{safe_name}_reel.mp4",
             )
 
-            upload_reel(
+            media_id = upload_reel(
                 video_path=video_path,
                 caption=(
                     f'"{quote}"\n— {philosopher}\n\n'
@@ -251,7 +251,9 @@ def run_pipeline(single: bool = False) -> None:
                 philosopher=philosopher,
                 quote=quote,
                 song_url=song["url"],
+                song_label=song.get("label", ""),
                 photo_id=photo_id,
+                media_id=media_id,
             )
             used_songs_this_run.append(song["url"])
             log.info("✓ Posted for %s", philosopher)

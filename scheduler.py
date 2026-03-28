@@ -4,6 +4,7 @@ import logging
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 
+from optimizer import run as run_optimizer
 from pipeline import run_pipeline
 
 log = logging.getLogger(__name__)
@@ -18,7 +19,16 @@ def start_scheduler(hour: int = 9, minute: int = 0) -> None:
         minute=minute,
         id="philosopher_pipeline",
     )
-    log.info("Scheduler running. Posts daily at %02d:%02d local time.", hour, minute)
+    # Optimize every Sunday at noon — reads Instagram metrics, rewrites config.json
+    scheduler.add_job(
+        run_optimizer,
+        trigger="cron",
+        day_of_week="sun",
+        hour=12,
+        minute=0,
+        id="optimizer",
+    )
+    log.info("Scheduler running. Posts daily at %02d:%02d, optimizes every Sunday at noon.", hour, minute)
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):

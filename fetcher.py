@@ -1,6 +1,7 @@
 """Fetch quotes via Groq, portraits via Wikimedia, match songs via Groq."""
 import base64
 import hashlib
+import json
 import logging
 import os
 import re
@@ -10,6 +11,14 @@ from pathlib import Path
 
 import requests
 from groq import Groq
+
+_CONFIG_PATH = Path(__file__).parent / "config.json"
+
+
+def _load_config() -> dict:
+    if _CONFIG_PATH.exists():
+        return json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+    return {}
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +37,9 @@ def _client() -> Groq:
 def fetch_quote(philosopher: str, used_quotes: list[str], client: Groq) -> str:
     """Generate a short paradoxical quote in the philosopher's style."""
     used_block = "\n".join(f"- {q}" for q in used_quotes) if used_quotes else "(none)"
+    cfg = _load_config()
+    style_hint = cfg.get("quote_style_hint", "")
+    extra = f"\nAdditional style guidance from performance data:\n{style_hint}\n" if style_hint else ""
     prompt = (
         f"Write a quote in the style of {philosopher} that hits like these examples:\n"
         f'- "Common sense is not so common." (Voltaire)\n'
@@ -38,6 +50,7 @@ def fetch_quote(philosopher: str, used_quotes: list[str], client: Groq) -> str:
         f"- Must have a twist, reversal, or paradox at the end\n"
         f"- Sounds like {philosopher} — their actual themes and vocabulary\n"
         f"- No clichés, no filler words like 'truly' or 'deeply'\n"
+        f"{extra}"
         f"Do NOT use these already-used quotes:\n{used_block}\n"
         f"Reply with ONLY the quote. Nothing else."
     )

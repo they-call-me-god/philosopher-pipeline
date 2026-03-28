@@ -1,6 +1,7 @@
 """State management — persists used quotes/songs/photos per philosopher to state.json."""
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -14,7 +15,7 @@ class State:
     def _load(self) -> dict:
         if self.path.exists():
             return json.loads(self.path.read_text(encoding="utf-8"))
-        return {"philosophers": {}, "global_blacklisted_songs": []}
+        return {"philosophers": {}, "global_blacklisted_songs": [], "posts": []}
 
     def save(self) -> None:
         self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
@@ -38,7 +39,15 @@ class State:
             self.save()
             log.info("Auto-blacklisted song: %s", url)
 
-    def mark_posted(self, philosopher: str, quote: str, song_url: str, photo_id: str) -> None:
+    def mark_posted(
+        self,
+        philosopher: str,
+        quote: str,
+        song_url: str,
+        photo_id: str,
+        media_id: str = "",
+        song_label: str = "",
+    ) -> None:
         phil = self.get_philosopher(philosopher)
         phil["post_count"] += 1
         if quote not in phil["used_quotes"]:
@@ -49,4 +58,16 @@ class State:
             phil["used_photos"].append(photo_id)
         if song_url not in self.data["global_blacklisted_songs"]:
             self.data["global_blacklisted_songs"].append(song_url)
+        # Store full post record for performance tracking
+        if "posts" not in self.data:
+            self.data["posts"] = []
+        self.data["posts"].append({
+            "philosopher": philosopher,
+            "quote": quote,
+            "song_url": song_url,
+            "song_label": song_label,
+            "photo_id": photo_id,
+            "media_id": str(media_id),
+            "posted_at": datetime.now(timezone.utc).isoformat(),
+        })
         self.save()
