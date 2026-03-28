@@ -1,6 +1,9 @@
 """State management — persists used quotes/songs/photos per philosopher to state.json."""
 import json
+import logging
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 class State:
@@ -28,6 +31,12 @@ class State:
 
     def get_blacklisted_songs(self) -> list[str]:
         return self.data.get("global_blacklisted_songs", [])
+
+    def blacklist_song(self, url: str) -> None:
+        if url not in self.data["global_blacklisted_songs"]:
+            self.data["global_blacklisted_songs"].append(url)
+            self.save()
+            log.info("Auto-blacklisted song: %s", url)
 
     def mark_posted(self, philosopher: str, quote: str, song_url: str, photo_id: str) -> None:
         phil = self.get_philosopher(philosopher)

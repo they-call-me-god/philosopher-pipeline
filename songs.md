@@ -15,7 +15,6 @@ Format: `- <youtube-url>  # <vibe description>`
 ---
 
 ## Trending Aesthetic / Dark Pop
-- https://www.youtube.com/watch?v=wVyggTKDcOE  # Dream pop slow burn, romantic melancholy, cinematic — Cigarettes After Sex "Apocalypse"
 - https://www.youtube.com/watch?v=TWcyIpul8OE  # Post-folk ambient, vast philosophical awe — Bon Iver "Holocene"
 - https://www.youtube.com/watch?v=u9Dg-g7t2l4  # Folk delicate, melancholic warmth, cinematic — Bon Iver "Skinny Love"
 - https://www.youtube.com/watch?v=DyDfgMOUjCI  # Dark whisper pop, unsettling cool, viral aesthetic — Billie Eilish "bad guy"

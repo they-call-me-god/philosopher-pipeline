@@ -1,8 +1,11 @@
 """Fetch quotes via Groq, portraits via Wikimedia, match songs via Groq."""
+import base64
 import hashlib
 import logging
 import os
 import re
+import subprocess
+import time
 from pathlib import Path
 
 import requests
@@ -13,14 +16,17 @@ log = logging.getLogger(__name__)
 WIKIMEDIA_API = "https://commons.wikimedia.org/w/api.php"
 WIKIMEDIA_HEADERS = {"User-Agent": "philosopher-pipeline/1.0 (contact: github.com/they-call-me-god)"}
 MODEL = "llama-3.3-70b-versatile"
+VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 
 def _client() -> Groq:
     return Groq(api_key=os.environ["GROQ_API_KEY"])
 
 
+# ── Quote ──────────────────────────────────────────────────────────────────────
+
 def fetch_quote(philosopher: str, used_quotes: list[str], client: Groq) -> str:
-    """Generate an authentic-sounding quote in the philosopher's style."""
+    """Generate a short paradoxical quote in the philosopher's style."""
     used_block = "\n".join(f"- {q}" for q in used_quotes) if used_quotes else "(none)"
     prompt = (
         f"Write a quote in the style of {philosopher} that hits like these examples:\n"
@@ -43,19 +49,67 @@ def fetch_quote(philosopher: str, used_quotes: list[str], client: Groq) -> str:
     return response.choices[0].message.content.strip().strip('"').strip("'")
 
 
+# ── Portrait ───────────────────────────────────────────────────────────────────
+
 def _last_name(philosopher: str) -> str:
     return philosopher.strip().split()[-1].lower()
 
 
-def fetch_portrait(philosopher: str, used_photos: list[str], cache_dir: Path) -> tuple[Path, str]:
+def _verify_portrait(image_path: Path, philosopher: str, client: Groq) -> bool:
+    """Use Groq vision to confirm image is a human portrait, not text/map/object."""
+    try:
+        img_b64 = base64.b64encode(image_path.read_bytes()).decode()
+        response = client.chat.completions.create(
+            model=VISION_MODEL,
+            max_tokens=10,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            f"Does this image show a clear human face or portrait of a person? "
+                            f"It should NOT be a book, manuscript, map, painting of text, statue, "
+                            f"or building. Answer only YES or NO."
+                        ),
+                    },
+                ],
+            }],
+        )
+        answer = response.choices[0].message.content.strip().upper()
+        ok = answer.startswith("YES")
+        if not ok:
+            log.warning("Portrait rejected by vision check (%s): %s", philosopher, answer)
+        return ok
+    except Exception as exc:
+        log.warning("Vision check failed (%s), accepting portrait anyway: %s", philosopher, exc)
+        return True  # don't block on API errors
+
+
+def fetch_portrait(
+    philosopher: str,
+    used_photos: list[str],
+    cache_dir: Path,
+    client: Groq | None = None,
+) -> tuple[Path, str]:
     """Fetch a portrait from Wikimedia Commons. Returns (local_path, photo_id)."""
     last = _last_name(philosopher)
-    # Most specific → least specific queries; filename must contain the philosopher's last name
     queries = [
         f"File:{philosopher}",
         f"{philosopher} portrait",
         philosopher,
     ]
+    bad_keywords = (
+        "manuscrit", "manuscript", "lettre", "letter", "signature",
+        "autograph", "handwriting", "book", "page", "text", "writing",
+        "map", "diagram", "chart", "tableau", "table", "schema",
+        "gravure", "engraving", "statue", "bust", "plaque", "monument",
+        "house", "birth", "home", "building", "church", "tomb", "grave",
+    )
     for query in queries:
         params = {
             "action": "query",
@@ -73,17 +127,8 @@ def fetch_portrait(philosopher: str, used_photos: list[str], cache_dir: Path) ->
 
         for page in pages:
             title = page.get("title", "").lower()
-            # Must contain the philosopher's last name
             if last not in title:
                 continue
-            # Reject manuscripts, books, letters, signatures, maps, diagrams
-            bad_keywords = (
-                "manuscrit", "manuscript", "lettre", "letter", "signature",
-                "autograph", "handwriting", "book", "page", "text", "writing",
-                "map", "diagram", "chart", "tableau", "table", "schema",
-                "gravure", "engraving", "statue", "bust", "plaque", "monument",
-                "house", "birth", "home", "building", "church", "tomb", "grave",
-            )
             if any(kw in title for kw in bad_keywords):
                 continue
             info = page.get("imageinfo", [{}])[0]
@@ -96,13 +141,47 @@ def fetch_portrait(philosopher: str, used_photos: list[str], cache_dir: Path) ->
                 continue
             local_path = cache_dir / f"{photo_id}.jpg"
             if not local_path.exists():
-                img_resp = requests.get(url, headers=WIKIMEDIA_HEADERS, timeout=30)
-                img_resp.raise_for_status()
+                for attempt in range(3):
+                    img_resp = requests.get(url, headers=WIKIMEDIA_HEADERS, timeout=30)
+                    if img_resp.status_code == 429:
+                        wait = 5 * (attempt + 1)
+                        log.warning("Wikimedia 429 — waiting %ds", wait)
+                        time.sleep(wait)
+                        continue
+                    img_resp.raise_for_status()
+                    break
+                else:
+                    log.warning("Skipping portrait %s — rate limited", photo_id)
+                    continue
                 local_path.write_bytes(img_resp.content)
                 log.info("Downloaded portrait %s for %s", photo_id, philosopher)
+            # Vision check — skip if it's not actually a face
+            if client and not _verify_portrait(local_path, philosopher, client):
+                used_photos = list(used_photos) + [photo_id]  # skip this one
+                continue
             return local_path, photo_id
 
     raise RuntimeError(f"No unused portrait found for {philosopher}")
+
+
+# ── Song ───────────────────────────────────────────────────────────────────────
+
+BANNED_SONG_TITLES = {
+    "metamorphosis", "snowfall",
+}
+
+
+def get_song_real_title(url: str) -> str:
+    """Fetch the actual YouTube video title via yt-dlp without downloading."""
+    try:
+        r = subprocess.run(
+            ["yt-dlp", "--no-playlist", "--print", "title", url],
+            capture_output=True, text=True, timeout=30,
+        )
+        return r.stdout.strip().lower() if r.returncode == 0 else ""
+    except subprocess.TimeoutExpired:
+        log.warning("Timed out fetching title for %s — skipping title check", url)
+        return ""
 
 
 def match_song(
@@ -112,8 +191,9 @@ def match_song(
     used_in_run: list[str],
     used_for_philosopher: list[str],
     client: Groq,
+    state=None,
 ) -> dict:
-    """Use Groq to pick the best-vibe song for this philosopher + quote."""
+    """Use Groq to pick the best-vibe song; auto-blacklists any with banned titles."""
     candidates = [
         s for s in available_songs
         if s["url"] not in used_in_run and s["url"] not in used_for_philosopher
@@ -123,23 +203,43 @@ def match_song(
     if not candidates:
         candidates = list(available_songs)
 
-    song_list = "\n".join(f"{i + 1}. {s['label']}" for i, s in enumerate(candidates))
-    prompt = (
-        f"Philosopher: {philosopher}\n"
-        f'Quote: "{quote}"\n\n'
-        f"Pick the song number (1-{len(candidates)}) whose emotional and aesthetic vibe "
-        f"best matches this philosopher and quote:\n{song_list}\n\n"
-        f"Reply with ONLY the number."
-    )
-    response = client.chat.completions.create(
-        model=MODEL,
-        max_tokens=10,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = response.choices[0].message.content.strip()
-    try:
-        idx = int(re.search(r"\d+", raw).group()) - 1
-        idx = max(0, min(idx, len(candidates) - 1))
-    except (AttributeError, ValueError):
-        idx = 0
-    return candidates[idx]
+    # Try up to len(candidates) times — skip any that fail the title check
+    tried: set[str] = set()
+    while True:
+        remaining = [s for s in candidates if s["url"] not in tried]
+        if not remaining:
+            raise RuntimeError(f"No valid songs left for {philosopher} after title checks")
+
+        song_list = "\n".join(f"{i + 1}. {s['label']}" for i, s in enumerate(remaining))
+        prompt = (
+            f"Philosopher: {philosopher}\n"
+            f'Quote: "{quote}"\n\n'
+            f"Pick the song number (1-{len(remaining)}) whose emotional and aesthetic vibe "
+            f"best matches this philosopher and quote:\n{song_list}\n\n"
+            f"Reply with ONLY the number."
+        )
+        response = client.chat.completions.create(
+            model=MODEL,
+            max_tokens=10,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.choices[0].message.content.strip()
+        try:
+            idx = int(re.search(r"\d+", raw).group()) - 1
+            idx = max(0, min(idx, len(remaining) - 1))
+        except (AttributeError, ValueError):
+            idx = 0
+
+        song = remaining[idx]
+
+        # Verify the real title doesn't contain banned words
+        real_title = get_song_real_title(song["url"])
+        log.info("Song real title: '%s'", real_title)
+        if any(banned in real_title for banned in BANNED_SONG_TITLES):
+            log.warning("Auto-blacklisting '%s' (%s) — banned title match", real_title, song["url"])
+            if state:
+                state.blacklist_song(song["url"])
+            tried.add(song["url"])
+            continue
+
+        return song

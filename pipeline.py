@@ -198,6 +198,7 @@ def run_pipeline(single: bool = False) -> None:
                 philosopher=philosopher,
                 used_photos=phil_state["used_photos"],
                 cache_dir=CACHE_PHOTOS,
+                client=client,
             )
 
             song = match_song(
@@ -207,6 +208,7 @@ def run_pipeline(single: bool = False) -> None:
                 used_in_run=used_songs_this_run,
                 used_for_philosopher=phil_state["used_songs"],
                 client=client,
+                state=state,
             )
             log.info("Song: %s", song["label"][:80])
 
