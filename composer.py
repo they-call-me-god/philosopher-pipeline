@@ -1,3 +1,4 @@
+from io import BytesIO
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 import ffmpeg
@@ -19,7 +20,11 @@ def compose_image(
     font_path: str,
 ) -> None:
     """Compose a B&W 1080x1920 Instagram Reel image with centered quote overlay."""
-    img = Image.open(photo_path).convert("L")  # grayscale
+    p = Path(photo_path)
+    if not p.exists() or p.stat().st_size == 0:
+        raise FileNotFoundError(f"Photo missing or empty: {photo_path}")
+    # Read into BytesIO first — avoids OneDrive cloud-file handle errors on Windows
+    img = Image.open(BytesIO(p.read_bytes())).convert("L")  # grayscale
     img = _fit_to_reel(img)
     img = img.convert("RGB")
 
@@ -70,17 +75,20 @@ def compose_reel(
     video = ffmpeg.input(image_path, loop=1, framerate=30, t=duration)
     audio = ffmpeg.input(audio_path, t=duration)
 
-    (
-        ffmpeg
-        .output(
-            video, audio, output_path,
-            vcodec="libx264", crf=23, pix_fmt="yuv420p",
-            acodec="aac", audio_bitrate="128k",
-            movflags="+faststart",
+    try:
+        (
+            ffmpeg
+            .output(
+                video, audio, output_path,
+                vcodec="libx264", crf=23, pix_fmt="yuv420p",
+                acodec="aac", audio_bitrate="128k",
+                movflags="+faststart",
+            )
+            .overwrite_output()
+            .run(quiet=True, capture_stderr=True)
         )
-        .overwrite_output()
-        .run(quiet=True)
-    )
+    except ffmpeg.Error as e:
+        raise RuntimeError(f"ffmpeg failed: {e.stderr.decode()[-300:]}")
 
 
 def _fit_to_reel(img: Image.Image) -> Image.Image:

@@ -1,3 +1,9 @@
+# Songs
+
+Format: `- <youtube-url>  # <vibe description>`
+
+## Songs
+
 - https://www.youtube.com/watch?v=acfYQmCBsz8  # TV Girl - Lovers Rock, indie nostalgic, warm aesthetic
 - https://www.youtube.com/watch?v=RBtlPT23PTM  # Beach House - Space Song, dreamy expansive, ethereal
 - https://www.youtube.com/watch?v=GCdwKhTtNNw  # The Neighbourhood - Sweater Weather, moody atmospheric

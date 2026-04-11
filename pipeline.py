@@ -51,7 +51,7 @@ FONT_PATH = BASE_DIR / "fonts" / "PlayfairDisplay-Regular.ttf"
 RUN_ID = time.strftime("%Y-%m-%dT%H%M%S")
 
 
-def main(upload_now: bool = False, single: bool = False, generate_only: bool = False) -> None:
+def main(upload_now: bool = True, single: bool = False, generate_only: bool = False) -> None:
     # ── Pre-flight ────────────────────────────────────────────────────────────
     for d in [OUTPUT_DIR, CACHE_PHOTOS, CACHE_AUDIO]:
         d.mkdir(parents=True, exist_ok=True)
@@ -72,12 +72,15 @@ def main(upload_now: bool = False, single: bool = False, generate_only: bool = F
     blacklisted = set(state.get_blacklisted_songs())
     available_songs = [s for s in songs if s["url"] not in blacklisted]
 
-    if len(available_songs) < len(philosophers):
+    if not available_songs:
         sys.exit(
-            f"[error] Need at least {len(philosophers)} songs, "
-            f"but only {len(available_songs)} available after excluding "
-            f"{len(blacklisted)} blacklisted URLs.\n"
-            f"Add more entries to {SONGS_FILE}."
+            f"[error] No songs available after excluding {len(blacklisted)} blacklisted URLs.\n"
+            f"Add entries to {SONGS_FILE}."
+        )
+    if len(available_songs) < len(philosophers):
+        log.warning(
+            "Only %d songs for %d philosophers — songs will be reused across philosophers.",
+            len(available_songs), len(philosophers),
         )
 
     log.info("Run ID: %s", RUN_ID)
@@ -198,7 +201,7 @@ def main(upload_now: bool = False, single: bool = False, generate_only: bool = F
         for reel in generated:
             log.info("  Ready: %s", reel["mp4_path"])
     elif upload_now:
-        log.info("--now flag set: uploading %d reels immediately...", len(generated))
+        log.info("Uploading %d reels immediately...", len(generated))
         for reel in generated:
             log.info("  Uploading %s...", reel["philosopher"])
             try:
@@ -266,8 +269,8 @@ def _download_audio(song_url: str, cache_dir: Path, state: StateManager) -> str 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Philosopher Instagram Pipeline")
-    parser.add_argument("--now", action="store_true", help="Upload immediately instead of scheduling")
+    parser.add_argument("--schedule", action="store_true", help="Schedule uploads at optimal times instead of uploading immediately")
     parser.add_argument("--single", action="store_true", help="Process only the philosopher with the fewest posts")
-    parser.add_argument("--generate-only", action="store_true", help="Generate reel but do not upload or schedule (saves to output/)")
+    parser.add_argument("--generate-only", action="store_true", help="Generate reel but do not upload (saves to output/)")
     args = parser.parse_args()
-    main(upload_now=args.now, single=args.single, generate_only=args.generate_only)
+    main(upload_now=not args.schedule, single=args.single, generate_only=args.generate_only)

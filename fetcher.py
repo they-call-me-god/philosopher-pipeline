@@ -1,5 +1,7 @@
+import ctypes
 import hashlib
 import logging
+import sys
 import time
 import requests
 from pathlib import Path
@@ -238,6 +240,10 @@ def fetch_photo(philosopher: str, used_photos: list[str], cache_dir: Path) -> st
                     img_resp.raise_for_status()
                     cached.write_bytes(img_resp.content)
 
+                if _is_cloud_only(cached):
+                    log.warning("Skipping cloud-only cached photo: %s", filename)
+                    continue
+
                 return str(cached)
 
     except Exception as e:
@@ -246,11 +252,11 @@ def fetch_photo(philosopher: str, used_photos: list[str], cache_dir: Path) -> st
     # Fallback: reuse any cached photo for this philosopher (prefer unused ones)
     cached_photos = sorted(cache_dir.glob(f"{slug}-*.jpg"))
     for p in cached_photos:
-        if p.name not in used_photos and p.stat().st_size > 0:
+        if p.name not in used_photos and p.stat().st_size > 0 and not _is_cloud_only(p):
             return str(p)
     # Last resort: any cached photo even if used before
     for p in cached_photos:
-        if p.stat().st_size > 0:
+        if p.stat().st_size > 0 and not _is_cloud_only(p):
             return str(p)
 
     return None

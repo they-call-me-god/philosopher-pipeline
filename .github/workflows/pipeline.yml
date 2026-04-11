@@ -17,10 +17,14 @@ jobs:
   run-pipeline:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -28,7 +32,7 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Install system dependencies (ffmpeg + yt-dlp)
+      - name: Install system dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg
@@ -41,8 +45,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: cache/audio
-          key: audio-cache-${{ runner.os }}
-          restore-keys: audio-cache-
+          key: audio-${{ runner.os }}-${{ hashFiles('songs.md') }}
+          restore-keys: audio-${{ runner.os }}-
 
       - name: Seed audio cache from release
         run: |
@@ -55,6 +59,7 @@ jobs:
           else
             echo "Audio cache already populated ($(ls cache/audio/*.m4a | wc -l) files)"
           fi
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -62,99 +67,57 @@ jobs:
         uses: actions/cache@v4
         with:
           path: cache/photos
-          key: photo-cache-${{ runner.os }}
-          restore-keys: photo-cache-
-
-      - name: Restore state
-        uses: actions/cache@v4
-        with:
-          path: state.json
-          key: state-${{ github.run_number }}
-          restore-keys: state-
+          key: photo-${{ runner.os }}
+          restore-keys: photo-${{ runner.os }}-
 
       - name: Restore Instagram session
         run: |
-          echo "${{ secrets.INSTAGRAM_SESSION }}" | base64 -d > deepahhthinking.session
+          if [ -n "${{ secrets.INSTAGRAM_SESSION }}" ]; then
+            echo "${{ secrets.INSTAGRAM_SESSION }}" | base64 -d \
+              > "${{ secrets.INSTAGRAM_USERNAME }}.session"
+            echo "Session restored."
+          else
+            echo "No session secret — fresh login will occur."
+          fi
         continue-on-error: true
 
-      - name: Download fonts
+      - name: Download font
         run: |
           mkdir -p fonts
-          curl -sL "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf" \
+          curl -fsSL \
+            "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf" \
             -o fonts/PlayfairDisplay-Regular.ttf
-
-      - name: Write vault input files
-        run: |
-          cat > philosophers.md << 'EOF'
-          - Albert Camus
-          - Fyodor Dostoevsky
-          - Franz Kafka
-          - Voltaire
-          - Friedrich Nietzsche
-          - Simone de Beauvoir
-          - Søren Kierkegaard
-          - Arthur Schopenhauer
-          - Marcus Aurelius
-          - Immanuel Kant
-          - Jean-Paul Sartre
-          - Blaise Pascal
-          EOF
-          cp ${{ github.workspace }}/../songs.md songs.md 2>/dev/null || true
-
-      - name: Write songs file
-        run: |
-          cat > songs.md << 'SONGS'
-          - https://www.youtube.com/watch?v=acfYQmCBsz8  # TV Girl - Lovers Rock, indie nostalgic, warm aesthetic
-          - https://www.youtube.com/watch?v=RBtlPT23PTM  # Beach House - Space Song, dreamy expansive, ethereal
-          - https://www.youtube.com/watch?v=GCdwKhTtNNw  # The Neighbourhood - Sweater Weather, moody atmospheric
-          - https://www.youtube.com/watch?v=bpOSxM0rNPM  # Arctic Monkeys - Do I Wanna Know, dark cool cinematic
-          - https://www.youtube.com/watch?v=OmKAn8rNbKg  # Novo Amor - Anchor, folk cinematic, emotional intimate
-          - https://www.youtube.com/watch?v=9IZKcb3LndA  # Men I Trust - Tailwhip, dream pop, chill aesthetic
-          - https://www.youtube.com/watch?v=QI8VrXkffcg  # Cigarettes After Sex - Nothing's Gonna Hurt You, tender cinematic
-          - https://www.youtube.com/watch?v=MYSVMgRr6pw  # Hozier - Take Me To Church, dramatic powerful, raw
-          - https://www.youtube.com/watch?v=sBzrzS1Ag_g  # Tame Impala - The Less I Know The Better, psychedelic trendy
-          - https://www.youtube.com/watch?v=qooWnw5rEcI  # Mitski - Nobody, art indie, lonely aesthetic
-          - https://www.youtube.com/watch?v=ixTkLjTBQyk  # Omar Apollo - Evergreen, R&B aesthetic, emotional trending
-          - https://www.youtube.com/watch?v=9sfYpolGCu8  # Phoebe Bridgers - Motion Sickness, indie bittersweet
-          - https://www.youtube.com/watch?v=3XqqkrJENB4  # Cigarettes After Sex - Cry, slow dreamy, melancholic
-          - https://www.youtube.com/watch?v=2Q466ZPyNAo  # Hollow Coves - The Woods, folk cinematic, naturalistic
-          - https://www.youtube.com/watch?v=o_1aF54DO60  # Lana Del Rey - Young And Beautiful, cinematic elegant
-          - https://www.youtube.com/watch?v=Gh8Gl2GwB6s  # girl in red - serotonin, indie pop, raw emotional
-          - https://www.youtube.com/watch?v=f43ODtOUmBw  # Clairo - Flaming Hot Cheetos, bedroom pop, indie aesthetic
-          - https://www.youtube.com/watch?v=xf4VhVAQd5o  # Still Woozy - Rocky, chill indie pop, warm aesthetic
-          - https://www.youtube.com/watch?v=39IU7ADaXmQ  # Rex Orange County - Loving Is Easy, upbeat indie playful
-          - https://www.youtube.com/watch?v=giEOcBLcnfE  # Cigarettes After Sex - Opera House, dreamy slow romantic
-          - https://www.youtube.com/watch?v=uQFVqltOXRg  # Daniel Caesar - Get You, smooth R&B, romantic aesthetic
-          SONGS
 
       - name: Write YouTube cookies
         run: |
           if [ -n "${{ secrets.YOUTUBE_COOKIES }}" ]; then
             echo "${{ secrets.YOUTUBE_COOKIES }}" | base64 -d > cookies.txt
-            echo "Cookies file written."
+            echo "Cookies written."
           else
-            echo "No YOUTUBE_COOKIES secret set — yt-dlp will run without cookies."
+            echo "No YOUTUBE_COOKIES secret — yt-dlp runs without cookies."
           fi
         continue-on-error: true
 
-      - name: Run pipeline (generate only)
+      - name: Run pipeline
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
+          INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
           YOUTUBE_COOKIES_FILE: ${{ github.workspace }}/cookies.txt
-        run: python pipeline.py --generate-only --single
+        run: python pipeline.py --single
 
-      - name: Upload reel artifact
-        uses: actions/upload-artifact@v4
+      - name: Commit updated state
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          git diff --cached --quiet || git commit -m "chore: update state after pipeline run [skip ci]"
+          git push
+
+      - name: Save updated Instagram session
         if: always()
-        with:
-          name: reel-${{ github.run_number }}
-          path: output/
-          retention-days: 7
-
-      - name: Save updated state cache
-        uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: state.json
-          key: state-${{ github.run_number }}
-
+        run: |
+          SESSION_FILE="${{ secrets.INSTAGRAM_USERNAME }}.session"
+          if [ -f "$SESSION_FILE" ]; then
+            echo "SESSION_B64=$(base64 -w 0 "$SESSION_FILE")" >> $GITHUB_OUTPUT
+          fi
+        id: save-session
