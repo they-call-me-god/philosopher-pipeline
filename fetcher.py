@@ -6,6 +6,22 @@ import time
 import requests
 from pathlib import Path
 
+_FILE_ATTRIBUTE_OFFLINE = 0x1000
+_FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x400000
+_IS_WINDOWS = sys.platform == "win32"
+
+
+def _is_cloud_only(path: Path) -> bool:
+    """Return True if the file is an OneDrive cloud-only placeholder (not locally synced).
+    Always returns False on non-Windows platforms."""
+    if not _IS_WINDOWS:
+        return False
+    attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
+    if attrs == -1:
+        return True
+    return bool(attrs & (_FILE_ATTRIBUTE_OFFLINE | _FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS))
+
+
 log = logging.getLogger(__name__)
 
 
