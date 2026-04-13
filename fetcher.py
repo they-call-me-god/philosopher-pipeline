@@ -219,7 +219,12 @@ def fetch_photo(philosopher: str, used_photos: list[str], cache_dir: Path) -> st
             title = item["title"]
             if not any(title.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png"]):
                 continue
-            if any(skip in title.lower() for skip in ["svg", "flag", "coat", "seal", "map"]):
+            if any(skip in title.lower() for skip in [
+                "svg", "flag", "coat", "seal", "map",
+                "collage", "comparison", "composite", "group",
+                "versus", "_vs_", "bust", "statue", "memorial",
+                "caricature", "cartoon", "drawing", "illustration",
+            ]):
                 continue
 
             info_params = {
