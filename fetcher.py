@@ -1,6 +1,7 @@
 import ctypes
 import hashlib
 import logging
+import random
 import sys
 import time
 import requests
@@ -12,7 +13,7 @@ _IS_WINDOWS = sys.platform == "win32"
 
 
 def _is_cloud_only(path: Path) -> bool:
-    """Return True if the file is an OneDrive cloud-only placeholder (not locally synced).
+    """Return True if the file is an OneDrive cloud-only placeholder.
     Always returns False on non-Windows platforms."""
     if not _IS_WINDOWS:
         return False
@@ -28,12 +29,11 @@ log = logging.getLogger(__name__)
 WIKIMEDIA_API = "https://commons.wikimedia.org/w/api.php"
 HEADERS = {"User-Agent": "PhilosopherPipeline/1.0 (instagram-content-bot; python-requests)"}
 
-# Hardcoded quotes per philosopher (cycles across runs, no API needed)
 PHILOSOPHER_QUOTES = {
     "albert camus": [
         "In the midst of winter, I found there was, within me, an invincible summer.",
         "You will never be happy if you continue to search for what happiness consists of.",
-        "Don't walk in front of me — I may not follow. Don't walk behind me — I may not lead. Walk beside me — just be my friend.",
+        "Don't walk in front of me, I may not follow. Don't walk behind me, I may not lead. Walk beside me, just be my friend.",
         "The only way to deal with an unfree world is to become so absolutely free that your very existence is an act of rebellion.",
         "I rebel; therefore I exist.",
         "Man is the only creature who refuses to be what he is.",
@@ -79,7 +79,7 @@ PHILOSOPHER_QUOTES = {
         "The most mediocre of males feels himself a demigod as compared with women.",
         "Representation of the world, like the world itself, is the work of men; they describe it from their own point of view.",
     ],
-    "søren kierkegaard": [
+    "soren kierkegaard": [
         "Life can only be understood backwards; but it must be lived forwards.",
         "The most common form of despair is not being who you are.",
         "Once you label me you negate me.",
@@ -128,8 +128,11 @@ PHILOSOPHER_QUOTES = {
         "Kind words do not cost much. Yet they accomplish much.",
     ],
 }
+# Alias for non-ASCII spelling
+PHILOSOPHER_QUOTES["ø"[0:0] + "soren kierkegaard"] = PHILOSOPHER_QUOTES["soren kierkegaard"]
+PHILOSOPHER_QUOTES["søren kierkegaard"] = PHILOSOPHER_QUOTES["soren kierkegaard"]
 
-# Vibe keywords per philosopher — used for song matching without AI
+
 PHILOSOPHER_VIBES = {
     "albert camus":         ["existential", "melancholic", "absurd", "rebellion", "dark", "atmospheric"],
     "fyodor dostoevsky":    ["dark", "heavy", "suffering", "crushing", "slowed", "sorrowful", "aggressive"],
@@ -137,7 +140,8 @@ PHILOSOPHER_VIBES = {
     "voltaire":             ["ironic", "cynical", "dominant", "punchy", "absurd", "wit"],
     "friedrich nietzsche":  ["dominant", "aggressive", "powerful", "intense", "dark", "relentless"],
     "simone de beauvoir":   ["atmospheric", "ethereal", "cinematic", "melancholic", "drift"],
-    "søren kierkegaard":    ["melancholic", "contemplative", "sorrowful", "nostalgic", "ethereal"],
+    "soren kierkegaard":    ["melancholic", "contemplative", "sorrowful", "nostalgic", "ethereal"],
+    "søren kierkegaard": ["melancholic", "contemplative", "sorrowful", "nostalgic", "ethereal"],
     "arthur schopenhauer":  ["crushing", "heavy", "sorrowful", "dark", "slowed", "pessimistic"],
     "marcus aurelius":      ["dominant", "stoic", "resolute", "mechanical", "cold", "powerful"],
     "immanuel kant":        ["cold", "mechanical", "precise", "cinematic", "atmospheric"],
@@ -146,30 +150,51 @@ PHILOSOPHER_VIBES = {
 }
 
 
-def fetch_quote(philosopher: str, used_quotes: list[str]) -> dict:
-    """
-    Returns {"quote": str, "reframed": bool}
-    Uses hardcoded curated quotes — no API key required.
-    """
+PHILOSOPHER_BIOS = {
+    "albert camus": "French-Algerian writer and absurdist philosopher (1913-1960). Nobel laureate, author of The Stranger and The Myth of Sisyphus.",
+    "fyodor dostoevsky": "Russian novelist (1821-1881) who plumbed faith, suffering, and the human soul in Crime and Punishment and The Brothers Karamazov.",
+    "franz kafka": "Czech-German writer (1883-1924) whose surreal, anxiety-laced stories like The Metamorphosis gave us the word Kafkaesque.",
+    "voltaire": "French Enlightenment writer and wit (1694-1778), tireless critic of dogma and intolerance, author of Candide.",
+    "friedrich nietzsche": "German philosopher (1844-1900) who challenged morality, religion, and meaning itself, coining the Ubermensch and 'God is dead.'",
+    "simone de beauvoir": "French existentialist (1908-1986) whose The Second Sex laid the foundation for modern feminist thought.",
+    "soren kierkegaard": "Danish theologian (1813-1855), widely regarded as the father of existentialism. Wrote on anxiety, despair, and the leap of faith.",
+    "søren kierkegaard": "Danish theologian (1813-1855), widely regarded as the father of existentialism. Wrote on anxiety, despair, and the leap of faith.",
+    "arthur schopenhauer": "German philosopher (1788-1860) of pessimistic metaphysics who argued life is driven by a blind, restless Will.",
+    "marcus aurelius": "Roman emperor and Stoic philosopher (121-180 AD). His private journal, Meditations, remains a classic manual of self-discipline.",
+    "immanuel kant": "Prussian philosopher (1724-1804) who synthesized rationalism and empiricism in the Critique of Pure Reason.",
+    "jean-paul sartre": "French existentialist (1905-1980) who argued that 'existence precedes essence', we are radically free and condemned to choose.",
+    "blaise pascal": "French mathematician and theologian (1623-1662). Pioneer of probability theory, author of the Pensees.",
+}
+
+
+RENAISSANCE_CATEGORIES = [
+    "Italian_Renaissance_paintings",
+    "Northern_Renaissance_paintings",
+    "High_Renaissance_paintings",
+    "Early_Renaissance_paintings",
+    "Paintings_of_the_Italian_Renaissance",
+]
+
+
+def get_bio(philosopher: str) -> str:
+    """Return a 1-2 sentence biographical blurb for the philosopher, or empty string."""
+    return PHILOSOPHER_BIOS.get(philosopher.lower(), "")
+
+
+def fetch_quote(philosopher: str, used_quotes: list) -> dict:
+    """Returns {"quote": str, "reframed": bool} from curated hardcoded quotes."""
     all_quotes = PHILOSOPHER_QUOTES.get(philosopher.lower(), [])
     used_set = set(used_quotes)
     fresh = [q for q in all_quotes if q not in used_set]
 
     if fresh:
         return {"quote": fresh[0], "reframed": False}
-    # All used — cycle back to start
     if all_quotes:
         return {"quote": all_quotes[0], "reframed": True}
     return {"quote": "The unexamined life is not worth living.", "reframed": True}
 
 
-def match_song(
-    philosopher: str,
-    quote: str,
-    songs: list[dict],
-    used_in_run: list[str],
-    used_for_philosopher: list[str],
-) -> str:
+def match_song(philosopher, quote, songs, used_in_run, used_for_philosopher):
     """Returns the YouTube URL of the best vibe match using keyword overlap."""
     last_3_used = set(used_for_philosopher[-3:])
     run_used = set(used_in_run)
@@ -181,10 +206,9 @@ def match_song(
     if not available:
         available = songs
 
-    # Score each song by keyword overlap with philosopher's known vibes
     vibes = PHILOSOPHER_VIBES.get(philosopher.lower(), [])
 
-    def score(song: dict) -> int:
+    def score(song):
         label_words = song["label"].lower().split()
         return sum(1 for v in vibes if any(v in w for w in label_words))
 
@@ -192,25 +216,20 @@ def match_song(
     return ranked[0]["url"]
 
 
-def fetch_photo(philosopher: str, used_photos: list[str], cache_dir: Path) -> str | None:
-    """Downloads a Wikimedia portrait. Returns local file path or None.
-
-    Falls back to any already-cached photo for this philosopher if Wikimedia
-    rate-limits us (429) or no fresh photo is available.
-    """
+def fetch_photo(philosopher, used_photos, cache_dir):
+    """Downloads a single Wikimedia portrait. Returns local file path or None."""
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-
     slug = philosopher.lower().replace(" ", "-")
 
     try:
         search_params = {
             "action": "query", "list": "search", "format": "json",
             "srnamespace": "6",
-            "srsearch": f"{philosopher} portrait",
+            "srsearch": philosopher + " portrait",
             "srlimit": "20",
         }
-        time.sleep(1)  # be polite to Wikimedia
+        time.sleep(1)
         resp = requests.get(WIKIMEDIA_API, params=search_params, timeout=30, headers=HEADERS)
         resp.raise_for_status()
         results = resp.json().get("query", {}).get("search", [])
@@ -249,7 +268,7 @@ def fetch_photo(philosopher: str, used_photos: list[str], cache_dir: Path) -> st
                     continue
 
                 url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
-                filename = f"{slug}-{url_hash}.jpg"
+                filename = slug + "-" + url_hash + ".jpg"
 
                 if filename in used_photos:
                     continue
@@ -268,16 +287,211 @@ def fetch_photo(philosopher: str, used_photos: list[str], cache_dir: Path) -> st
                 return str(cached)
 
     except Exception as e:
-        log.warning("Wikimedia fetch failed for %s: %s — using cache fallback.", philosopher, e)
+        log.warning("Wikimedia fetch failed for %s: %s, using cache fallback.", philosopher, e)
 
-    # Fallback: reuse any cached photo for this philosopher (prefer unused ones)
-    cached_photos = sorted(cache_dir.glob(f"{slug}-*.jpg"))
+    cached_photos = sorted(cache_dir.glob(slug + "-*.jpg"))
     for p in cached_photos:
         if p.name not in used_photos and p.stat().st_size > 0 and not _is_cloud_only(p):
             return str(p)
-    # Last resort: any cached photo even if used before
     for p in cached_photos:
         if p.stat().st_size > 0 and not _is_cloud_only(p):
             return str(p)
 
     return None
+
+
+def fetch_portraits(philosopher, count, used_portraits, cache_dir):
+    """Fetch up to `count` distinct portrait images of the philosopher.
+
+    Searches Wikimedia for `<name> portrait painting`. Falls back to cached
+    portraits (including legacy fetch_photo cache) when API limits hit.
+    """
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    slug = philosopher.lower().replace(" ", "-")
+    used_set = set(used_portraits)
+    collected = []
+
+    try:
+        search_params = {
+            "action": "query", "list": "search", "format": "json",
+            "srnamespace": "6",
+            "srsearch": philosopher + " portrait painting",
+            "srlimit": "40",
+        }
+        time.sleep(1)
+        resp = requests.get(WIKIMEDIA_API, params=search_params, timeout=30, headers=HEADERS)
+        resp.raise_for_status()
+        results = resp.json().get("query", {}).get("search", [])
+    except Exception as e:
+        log.warning("Portrait search failed for %s: %s", philosopher, e)
+        results = []
+
+    for item in results:
+        if len(collected) >= count:
+            break
+        title = item.get("title", "")
+        if not any(title.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png"]):
+            continue
+        if any(skip in title.lower() for skip in [
+            "svg", "flag", "coat", "seal", "map",
+            "collage", "comparison", "composite", "group",
+            "versus", "_vs_", "caricature", "cartoon",
+        ]):
+            continue
+        try:
+            info_params = {
+                "action": "query", "titles": title, "prop": "imageinfo",
+                "iiprop": "url|size", "format": "json",
+            }
+            time.sleep(0.4)
+            info_resp = requests.get(WIKIMEDIA_API, params=info_params, timeout=30, headers=HEADERS)
+            info_resp.raise_for_status()
+            pages = info_resp.json().get("query", {}).get("pages", {})
+        except Exception as e:
+            log.warning("Portrait info failed (%s): %s", title, e)
+            continue
+
+        for page in pages.values():
+            infos = page.get("imageinfo", [])
+            if not infos:
+                continue
+            info = infos[0]
+            url = info["url"]
+            w, h = info.get("width", 0), info.get("height", 0)
+            if w < 500 or h < 500:
+                continue
+
+            url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+            filename = "portrait-" + slug + "-" + url_hash + ".jpg"
+            if filename in used_set:
+                continue
+
+            cached = cache_dir / filename
+            if not cached.exists() or cached.stat().st_size == 0:
+                try:
+                    time.sleep(0.4)
+                    img_resp = requests.get(url, timeout=60, headers=HEADERS)
+                    img_resp.raise_for_status()
+                    cached.write_bytes(img_resp.content)
+                except Exception as e:
+                    log.warning("Portrait download failed (%s): %s", url, e)
+                    continue
+            if _is_cloud_only(cached) or cached.stat().st_size == 0:
+                continue
+            collected.append(str(cached))
+
+    if len(collected) < count:
+        for p in sorted(cache_dir.glob("portrait-" + slug + "-*.jpg")):
+            sp = str(p)
+            if sp in collected:
+                continue
+            if p.stat().st_size > 0 and not _is_cloud_only(p):
+                collected.append(sp)
+                if len(collected) >= count:
+                    break
+        # Legacy fetch_photo cached portraits
+        for p in sorted(cache_dir.glob(slug + "-*.jpg")):
+            sp = str(p)
+            if sp in collected:
+                continue
+            if p.stat().st_size > 0 and not _is_cloud_only(p):
+                collected.append(sp)
+                if len(collected) >= count:
+                    break
+
+    return collected[:count]
+
+
+def fetch_paintings(count, used_paintings, cache_dir):
+    """Fetch up to `count` Renaissance paintings from Wikimedia Commons categories."""
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    used_set = set(used_paintings)
+    collected = []
+    seen_urls = set()
+
+    categories = list(RENAISSANCE_CATEGORIES)
+    random.shuffle(categories)
+
+    for category in categories:
+        if len(collected) >= count:
+            break
+        try:
+            params = {
+                "action": "query", "list": "categorymembers", "format": "json",
+                "cmtype": "file", "cmtitle": "Category:" + category,
+                "cmlimit": "200",
+            }
+            time.sleep(1)
+            resp = requests.get(WIKIMEDIA_API, params=params, timeout=30, headers=HEADERS)
+            resp.raise_for_status()
+            members = resp.json().get("query", {}).get("categorymembers", [])
+            random.shuffle(members)
+        except Exception as e:
+            log.warning("Wikimedia category %s failed: %s", category, e)
+            continue
+
+        for item in members:
+            if len(collected) >= count:
+                break
+            title = item.get("title", "")
+            if not any(title.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png"]):
+                continue
+            try:
+                info_params = {
+                    "action": "query", "titles": title, "prop": "imageinfo",
+                    "iiprop": "url|size", "format": "json",
+                }
+                time.sleep(0.35)
+                info_resp = requests.get(WIKIMEDIA_API, params=info_params, timeout=30, headers=HEADERS)
+                info_resp.raise_for_status()
+                pages = info_resp.json().get("query", {}).get("pages", {})
+            except Exception as e:
+                log.warning("Wikimedia info failed (%s): %s", title, e)
+                continue
+
+            for page in pages.values():
+                infos = page.get("imageinfo", [])
+                if not infos:
+                    continue
+                info = infos[0]
+                url = info["url"]
+                w, h = info.get("width", 0), info.get("height", 0)
+                if w < 800 or h < 800:
+                    continue
+                if url in seen_urls:
+                    continue
+                seen_urls.add(url)
+
+                url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+                filename = "renaissance-" + url_hash + ".jpg"
+                if filename in used_set:
+                    continue
+
+                cached = cache_dir / filename
+                if not cached.exists() or cached.stat().st_size == 0:
+                    try:
+                        time.sleep(0.35)
+                        img_resp = requests.get(url, timeout=60, headers=HEADERS)
+                        img_resp.raise_for_status()
+                        cached.write_bytes(img_resp.content)
+                    except Exception as e:
+                        log.warning("Painting download failed (%s): %s", url, e)
+                        continue
+                if _is_cloud_only(cached) or cached.stat().st_size == 0:
+                    continue
+                collected.append(str(cached))
+
+    if len(collected) < count:
+        for p in sorted(cache_dir.glob("renaissance-*.jpg")):
+            sp = str(p)
+            if sp in collected:
+                continue
+            if p.stat().st_size > 0 and not _is_cloud_only(p):
+                collected.append(sp)
+                if len(collected) >= count:
+                    break
+
+    return collected[:count]
