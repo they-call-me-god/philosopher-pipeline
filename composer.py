@@ -3,6 +3,11 @@
 - compose_frame(): one image + quote + translucent watermark -> 1080x1920 JPG.
 - compose_slideshow(): N composed frames + audio -> fast-cut MP4 reel.
 - compose_image()/compose_reel(): backward-compat shims for legacy callers.
+
+Tuned for IG Reels algorithm:
+- 0.25 s/frame -> "edit" feel
+- 7 s reel -> short enough that viewers loop 3-4 times before scrolling
+- Seamless loop: last frame matches first frame so the loop boundary is invisible
 """
 import logging
 import tempfile
@@ -25,8 +30,13 @@ WATERMARK_TEXT = "@deepahhthinking"
 WATERMARK_OPACITY = 120
 WATERMARK_FONT_SIZE = 34
 
-DEFAULT_FRAME_DURATION = 1.25
-DEFAULT_REEL_DURATION = 30
+# Reel pacing tuned for IG retention / replay rate.
+DEFAULT_FRAME_DURATION = 0.25  # ultra-fast cuts, looks like an edit
+DEFAULT_REEL_DURATION = 7      # short, encourages 3-4 replays before scroll
+SEAMLESS_LOOP = True           # last frame == first frame so the IG loop is invisible
+
+# TODO(next): export the per-frame composed JPGs as a CapCut template payload
+# (CapCut "image-template" JSON pointing to the frame stack + audio).
 
 
 def compose_frame(
@@ -115,8 +125,14 @@ def compose_slideshow(
     font_path,
     frame_duration=DEFAULT_FRAME_DURATION,
     reel_duration=DEFAULT_REEL_DURATION,
+    seamless_loop=SEAMLESS_LOOP,
 ):
-    """Render N image frames and concat them into a fast-cut reel with audio."""
+    """Render N image frames and concat them into a fast-cut reel with audio.
+
+    seamless_loop: when True, the trailing concat-demuxer entry is rewritten
+    so the last visible frame matches the first frame, hiding the IG auto-loop
+    boundary and inflating average watch time per impression.
+    """
     if not image_paths:
         raise ValueError("compose_slideshow requires at least one image")
 
@@ -147,7 +163,11 @@ def compose_slideshow(
         for f in frame_files:
             lines.append("file " + APOS + f.as_posix() + APOS)
             lines.append("duration " + str(frame_duration))
-        lines.append("file " + APOS + frame_files[-1].as_posix() + APOS)
+        # ffmpeg concat demuxer requires the final file repeated (without duration).
+        # If seamless_loop is set, we repeat frame 0 instead of the last frame so
+        # the loop boundary is visually invisible on Instagram's auto-replay.
+        loop_target = frame_files[0] if seamless_loop and len(frame_files) > 1 else frame_files[-1]
+        lines.append("file " + APOS + loop_target.as_posix() + APOS)
         concat_path.write_text("\n".join(lines), encoding="utf-8")
 
         try:
@@ -196,7 +216,7 @@ def _fit_to_reel_color(img):
         bg_w = max(REEL_WIDTH, int(bg_h * img_ratio))
     else:
         bg_w = REEL_WIDTH
-        bg_h = max(REEL_HEIGHT, int(bg_w / img_ratio))
+        bg_h = max(REEL_WIDTH, int(bg_w / img_ratio))
     bg = img.resize((bg_w, bg_h), Image.LANCZOS)
     bg_x = (bg_w - REEL_WIDTH) // 2
     bg_y = (bg_h - REEL_HEIGHT) // 2
