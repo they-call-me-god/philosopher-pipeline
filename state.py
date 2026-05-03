@@ -22,7 +22,7 @@ def _default_entry() -> dict:
 class StateManager:
     def __init__(self, path: Path):
         self.path = Path(path)
-        self._data: dict | None = None
+        self._data = None
 
     def load(self) -> dict:
         if not self.path.exists():
@@ -32,9 +32,9 @@ class StateManager:
             self._data = json.loads(self.path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, ValueError):
             ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-            bak = self.path.with_name(f"state.json.bak.{ts}")
+            bak = self.path.with_name("state.json.bak." + ts)
             shutil.copy(self.path, bak)
-            log.warning("Corrupt state.json — backed up to %s, starting fresh.", bak)
+            log.warning("Corrupt state.json, backed up to %s, starting fresh.", bak)
             self._data = {}
         return self._data
 
@@ -58,15 +58,23 @@ class StateManager:
         return copy.deepcopy(data[name])
 
     def update_philosopher(
-        self, name: str, quote: str, song_url: str, photo_filename: str, reframed: bool = False
-    ) -> None:
+        self, name, quote, song_url, photo_filename, reframed=False
+    ):
+        """Record a successful run.
+
+        photo_filename may be either a single str (legacy) or a list of strings
+        (new slideshow path tracks every painting + portrait used in the reel).
+        """
         data = self._ensure_loaded()
         if name not in data:
             data[name] = _default_entry()
         entry = data[name]
         entry["used_quotes"].append(quote)
         entry["used_songs"].append(song_url)
-        entry["used_photos"].append(photo_filename)
+        if isinstance(photo_filename, (list, tuple)):
+            entry["used_photos"].extend(photo_filename)
+        else:
+            entry["used_photos"].append(photo_filename)
         entry["post_count"] += 1
         entry["reframed"] = reframed
         entry["last_generated"] = date.today().isoformat()
@@ -79,5 +87,5 @@ class StateManager:
             data["_blacklisted_songs"].append(url)
         self.save(data)
 
-    def get_blacklisted_songs(self) -> list[str]:
+    def get_blacklisted_songs(self):
         return self._ensure_loaded().get("_blacklisted_songs", [])
