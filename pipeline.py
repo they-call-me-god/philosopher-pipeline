@@ -3,9 +3,10 @@
 Philosopher Instagram Pipeline
 Usage: python pipeline.py
 
-Reads philosophers.md and songs.md, fetches a mix of Renaissance paintings
-and writer portraits, and composes a fast-cut slideshow Reel for each
-philosopher with a translucent @deepahhthinking watermark.
+Generates a 7-second fast-cut Reel per philosopher using a mix of Renaissance
+paintings and portraits of the writer, with a translucent @deepahhthinking
+watermark. Caption is tuned for IG retention (hook -> quote -> bio -> CTA ->
+5 focused hashtags) so the post earns saves and replays.
 """
 import hashlib
 import logging
@@ -36,7 +37,6 @@ from uploader import upload_reel
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-# Paths
 BASE_DIR = Path(__file__).parent
 VAULT_DIR = BASE_DIR.parent
 
@@ -52,9 +52,37 @@ CACHE_PAINTINGS = BASE_DIR / "cache" / "paintings"
 CACHE_AUDIO = BASE_DIR / "cache" / "audio"
 FONT_PATH = BASE_DIR / "fonts" / "PlayfairDisplay-Regular.ttf"
 
-# Slideshow mix: 14 paintings + 10 writer portraits = 24 frames at 1.25s = 30s reel
-NUM_PAINTINGS = 14
-NUM_PORTRAITS = 10
+# Slideshow mix: 8 paintings + 6 portraits = 14 unique images.
+# composer.compose_slideshow loops them to fill the 7s reel
+# at 0.25s/frame (28 frames), so each unique image appears ~2x.
+# That repetition + 7s length makes the reel a "loop magnet" on IG.
+NUM_PAINTINGS = 8
+NUM_PORTRAITS = 6
+
+# Hooks rotate by post_count so the same opening line never repeats per
+# philosopher, which avoids the IG "duplicate caption" downranking.
+HOOKS = [
+    "the kind of words that hit at 3am.",
+    "this hits different at 25 vs 35.",
+    "save this. read it again next week.",
+    "screenshot this one.",
+    "philosophy that actually changes you.",
+    "the words that shaped western thought.",
+    "you needed to hear this today.",
+    "they wrote this 200+ years ago. still hits.",
+]
+
+# Focused 5-tag set outperforms 30-tag spam under the 2025 algo.
+HASHTAGS = "#philosophy #stoicism #renaissance #wisdom #deepthoughts"
+
+# Soft CTA priorities: saves > follows > likes for IG retention scoring.
+CTA_LINE = (
+    "save this for the day you need it.\n"
+    "follow @deepahhthinking for daily wisdom that actually rewires how you think."
+)
+
+# TODO(next): emit a CapCut-template JSON alongside the .mp4 so the
+# slideshow can be re-edited inside the CapCut app (image stack + beat map).
 
 RUN_ID = time.strftime("%Y-%m-%dT%H%M%S")
 
@@ -70,6 +98,15 @@ def _interleave(a, b):
             out.append(b[i])
         i += 1
     return out
+
+
+def _build_caption(quote, philosopher, hook, bio, slug_tag):
+    parts = [hook, '"' + quote + '"', "- " + philosopher]
+    if bio:
+        parts.append(bio)
+    parts.append(CTA_LINE)
+    parts.append(HASHTAGS + " #" + slug_tag)
+    return "\n\n".join(parts)
 
 
 def main(upload_now=True, single=False, generate_only=False):
@@ -142,8 +179,8 @@ def main(upload_now=True, single=False, generate_only=False):
         used_songs_this_run.append(song_url)
         log.info("  Song: %s", song_url)
 
-        # 3. Fetch images (paintings + writer portraits)
-        log.info("  Fetching %d Renaissance paintings + %d portraits of %s...",
+        # 3. Image stack: Renaissance paintings + writer portraits, interleaved.
+        log.info("  Fetching %d paintings + %d portraits of %s...",
                  NUM_PAINTINGS, NUM_PORTRAITS, philosopher)
         try:
             paintings = fetch_paintings(NUM_PAINTINGS, phil_state["used_photos"], CACHE_PAINTINGS)
@@ -172,12 +209,13 @@ def main(upload_now=True, single=False, generate_only=False):
             continue
         log.info("  Audio: %s", audio_path)
 
-        # 5. Compose slideshow + cover thumbnail
+        # 5. Compose slideshow + cover thumbnail.
+        # composer defaults are 0.25s/frame, 7s reel, seamless loop on.
         slug = _philosopher_slug(philosopher)
         mp4_path = str(OUTPUT_DIR / (slug + "-" + RUN_ID + ".mp4"))
         cover_jpg = str(OUTPUT_DIR / (slug + "-" + RUN_ID + ".jpg"))
 
-        log.info("  Composing slideshow reel...")
+        log.info("  Composing 7s fast-cut slideshow...")
         try:
             compose_slideshow(
                 frames, quote, philosopher,
@@ -197,24 +235,16 @@ def main(upload_now=True, single=False, generate_only=False):
             log.warning("  Reel file missing or empty for %s, skipping.", philosopher)
             continue
 
-        # 6. State update (record all painting + portrait filenames used)
+        # 6. State update (record every painting + portrait used in the reel)
         all_filenames = [Path(p).name for p in (paintings + portraits)]
         state.update_philosopher(philosopher, quote, song_url, all_filenames, reframed)
         log.info("  State updated.")
 
-        # 7. Caption with author bio
+        # 7. Caption with rotating hook + bio + CTA + focused hashtags
         bio = get_bio(philosopher)
         slug_tag = slug.replace("-", "")[:20]
-        caption_parts = ['"' + quote + '"', "- " + philosopher]
-        if bio:
-            caption_parts.append(bio)
-        caption_parts.append(
-            "#philosophy #quotes #wisdom #renaissance #art #deepthoughts "
-            "#philosophyquotes #mindset #existentialism #stoicism #motivation "
-            "#" + slug_tag + " #thinkers #lifequotes #intellectuals "
-            "#classicquotes #deepquotes #renaissanceart #classicalart"
-        )
-        caption = "\n\n".join(caption_parts)
+        hook = HOOKS[phil_state["post_count"] % len(HOOKS)]
+        caption = _build_caption(quote, philosopher, hook, bio, slug_tag)
 
         generated.append({
             "philosopher": philosopher,
