@@ -3,9 +3,9 @@
 Philosopher Instagram Pipeline
 Usage: python pipeline.py
 
-Reads philosophers.md and songs.md from the Vault root,
-generates a B&W quote reel for each philosopher,
-and schedules them for Instagram upload at optimal times.
+Reads philosophers.md and songs.md, fetches a mix of Renaissance paintings
+and writer portraits, and composes a fast-cut slideshow Reel for each
+philosopher with a translucent @deepahhthinking watermark.
 """
 import hashlib
 import logging
@@ -25,15 +25,18 @@ if _env_file.exists():
 
 from state import StateManager
 from input_parser import parse_philosophers, parse_songs
-from fetcher import fetch_quote, match_song, fetch_photo
-from composer import compose_image, compose_reel
+from fetcher import (
+    fetch_quote, match_song, fetch_photo,
+    fetch_paintings, fetch_portraits, get_bio,
+)
+from composer import compose_image, compose_reel, compose_frame, compose_slideshow
 from scheduler import schedule_uploads
 from uploader import upload_reel
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+# Paths
 BASE_DIR = Path(__file__).parent
 VAULT_DIR = BASE_DIR.parent
 
@@ -45,24 +48,40 @@ SONGS_FILE = _local_songs if _local_songs.exists() else VAULT_DIR / "songs.md"
 STATE_FILE = BASE_DIR / "state.json"
 OUTPUT_DIR = BASE_DIR / "output"
 CACHE_PHOTOS = BASE_DIR / "cache" / "photos"
+CACHE_PAINTINGS = BASE_DIR / "cache" / "paintings"
 CACHE_AUDIO = BASE_DIR / "cache" / "audio"
 FONT_PATH = BASE_DIR / "fonts" / "PlayfairDisplay-Regular.ttf"
+
+# Slideshow mix: 14 paintings + 10 writer portraits = 24 frames at 1.25s = 30s reel
+NUM_PAINTINGS = 14
+NUM_PORTRAITS = 10
 
 RUN_ID = time.strftime("%Y-%m-%dT%H%M%S")
 
 
-def main(upload_now: bool = True, single: bool = False, generate_only: bool = False) -> None:
-    # ── Pre-flight ────────────────────────────────────────────────────────────
-    for d in [OUTPUT_DIR, CACHE_PHOTOS, CACHE_AUDIO]:
+def _interleave(a, b):
+    """Interleave two lists alternately, appending the longer tail at the end."""
+    out = []
+    i = 0
+    while i < max(len(a), len(b)):
+        if i < len(a):
+            out.append(a[i])
+        if i < len(b):
+            out.append(b[i])
+        i += 1
+    return out
+
+
+def main(upload_now=True, single=False, generate_only=False):
+    for d in [OUTPUT_DIR, CACHE_PHOTOS, CACHE_PAINTINGS, CACHE_AUDIO]:
         d.mkdir(parents=True, exist_ok=True)
 
     if not FONT_PATH.exists():
         sys.exit(
-            f"[error] Font not found: {FONT_PATH}\n"
-            f"Run: curl -L <playfair-url> -o {FONT_PATH}"
+            "[error] Font not found: " + str(FONT_PATH) + "\n"
+            "Run: curl -L <playfair-url> -o " + str(FONT_PATH)
         )
 
-    # ── Parse inputs ──────────────────────────────────────────────────────────
     philosophers = parse_philosophers(PHILOSOPHERS_FILE)
     songs = parse_songs(SONGS_FILE)
 
@@ -74,42 +93,41 @@ def main(upload_now: bool = True, single: bool = False, generate_only: bool = Fa
 
     if not available_songs:
         sys.exit(
-            f"[error] No songs available after excluding {len(blacklisted)} blacklisted URLs.\n"
-            f"Add entries to {SONGS_FILE}."
+            "[error] No songs available after excluding " + str(len(blacklisted)) +
+            " blacklisted URLs.\nAdd entries to " + str(SONGS_FILE)
         )
     if len(available_songs) < len(philosophers):
         log.warning(
-            "Only %d songs for %d philosophers — songs will be reused across philosophers.",
+            "Only %d songs for %d philosophers, songs will be reused across philosophers.",
             len(available_songs), len(philosophers),
         )
 
     log.info("Run ID: %s", RUN_ID)
     log.info("Processing %d philosophers...", len(philosophers))
 
-    # ── Process each philosopher ──────────────────────────────────────────────
-    generated: list[dict] = []
-    used_songs_this_run: list[str] = []
+    generated = []
+    used_songs_this_run = []
 
     if single:
         philosophers = sorted(philosophers, key=lambda p: state.get_philosopher(p)["post_count"])[:1]
         log.info("Running in --single mode. Selected %s", philosophers[0])
 
     for philosopher in philosophers:
-        log.info("── %s ──", philosopher)
+        log.info("== %s ==", philosopher)
         phil_state = state.get_philosopher(philosopher)
 
-        # 1. Fetch quote
+        # 1. Quote
         log.info("  Fetching quote...")
         try:
             quote_result = fetch_quote(philosopher, phil_state["used_quotes"])
         except Exception as e:
-            log.warning("  Quote fetch failed for %s: %s — skipping.", philosopher, e)
+            log.warning("  Quote fetch failed for %s: %s, skipping.", philosopher, e)
             continue
         quote = quote_result["quote"]
         reframed = quote_result["reframed"]
         log.info("  Quote: %s...", quote[:60])
 
-        # 2. Match song
+        # 2. Song match
         log.info("  Matching song...")
         try:
             song_url = match_song(
@@ -119,79 +137,93 @@ def main(upload_now: bool = True, single: bool = False, generate_only: bool = Fa
                 used_for_philosopher=phil_state["used_songs"],
             )
         except Exception as e:
-            log.warning("  Song match failed for %s: %s — skipping.", philosopher, e)
+            log.warning("  Song match failed for %s: %s, skipping.", philosopher, e)
             continue
         used_songs_this_run.append(song_url)
         log.info("  Song: %s", song_url)
 
-        # 3. Fetch photo
-        log.info("  Fetching photo...")
+        # 3. Fetch images (paintings + writer portraits)
+        log.info("  Fetching %d Renaissance paintings + %d portraits of %s...",
+                 NUM_PAINTINGS, NUM_PORTRAITS, philosopher)
         try:
-            photo_path = fetch_photo(philosopher, phil_state["used_photos"], CACHE_PHOTOS)
+            paintings = fetch_paintings(NUM_PAINTINGS, phil_state["used_photos"], CACHE_PAINTINGS)
         except Exception as e:
-            log.warning("  Photo fetch failed for %s: %s — skipping.", philosopher, e)
-            continue
-        if not photo_path:
-            log.warning("  No photo found for %s — skipping.", philosopher)
-            continue
-        photo_filename = Path(photo_path).name
-        log.info("  Photo: %s", photo_filename)
-
-        # 4. Compose image
-        log.info("  Composing image...")
-        slug = _philosopher_slug(philosopher)
-        img_path = str(OUTPUT_DIR / f"{slug}-{RUN_ID}.jpg")
+            log.warning("  Painting fetch error: %s", e)
+            paintings = []
         try:
-            compose_image(photo_path, quote, philosopher, img_path, str(FONT_PATH))
+            portraits = fetch_portraits(philosopher, NUM_PORTRAITS, phil_state["used_photos"], CACHE_PHOTOS)
         except Exception as e:
-            log.warning("  Image composition failed for %s: %s — skipping.", philosopher, e)
-            continue
-        log.info("  Image: %s", img_path)
+            log.warning("  Portrait fetch error: %s", e)
+            portraits = []
 
-        # 5. Download audio
+        if not paintings and not portraits:
+            log.warning("  No images for %s, skipping.", philosopher)
+            continue
+
+        frames = _interleave(paintings, portraits)
+        log.info("  Got %d frames (%d paintings + %d portraits)",
+                 len(frames), len(paintings), len(portraits))
+
+        # 4. Audio
         log.info("  Downloading audio...")
         audio_path = _download_audio(song_url, CACHE_AUDIO, state)
         if not audio_path:
-            log.warning("  Audio download failed for %s — skipping.", philosopher)
+            log.warning("  Audio download failed for %s, skipping.", philosopher)
             continue
         log.info("  Audio: %s", audio_path)
 
-        # 6. Compose reel
-        log.info("  Composing reel...")
-        mp4_path = str(OUTPUT_DIR / f"{slug}-{RUN_ID}.mp4")
+        # 5. Compose slideshow + cover thumbnail
+        slug = _philosopher_slug(philosopher)
+        mp4_path = str(OUTPUT_DIR / (slug + "-" + RUN_ID + ".mp4"))
+        cover_jpg = str(OUTPUT_DIR / (slug + "-" + RUN_ID + ".jpg"))
+
+        log.info("  Composing slideshow reel...")
         try:
-            compose_reel(img_path, audio_path, mp4_path)
+            compose_slideshow(
+                frames, quote, philosopher,
+                audio_path, mp4_path, str(FONT_PATH),
+            )
         except Exception as e:
-            log.warning("  Reel composition failed for %s: %s — skipping.", philosopher, e)
+            log.warning("  Slideshow composition failed for %s: %s, skipping.", philosopher, e)
             continue
 
-        # Verify output
+        try:
+            compose_frame(frames[0], quote, philosopher, cover_jpg, str(FONT_PATH))
+        except Exception as e:
+            log.warning("  Cover thumbnail failed for %s: %s (using mp4 only)", philosopher, e)
+            cover_jpg = None
+
         if not Path(mp4_path).exists() or Path(mp4_path).stat().st_size == 0:
-            log.warning("  Reel file missing or empty for %s — skipping.", philosopher)
+            log.warning("  Reel file missing or empty for %s, skipping.", philosopher)
             continue
 
-        # 7. Update state — only after confirmed success
-        state.update_philosopher(philosopher, quote, song_url, photo_filename, reframed)
+        # 6. State update (record all painting + portrait filenames used)
+        all_filenames = [Path(p).name for p in (paintings + portraits)]
+        state.update_philosopher(philosopher, quote, song_url, all_filenames, reframed)
         log.info("  State updated.")
 
+        # 7. Caption with author bio
+        bio = get_bio(philosopher)
         slug_tag = slug.replace("-", "")[:20]
-        caption = (
-            f'"{quote}"\n\n'
-            f"— {philosopher}\n\n"
-            f"#philosophy #quotes #wisdom #deepthoughts #philosophyquotes "
-            f"#mindset #existentialism #stoicism #motivation #{slug_tag} "
-            f"#thinkers #lifequotes #intellectuals #classicquotes #deepquotes"
+        caption_parts = ['"' + quote + '"', "- " + philosopher]
+        if bio:
+            caption_parts.append(bio)
+        caption_parts.append(
+            "#philosophy #quotes #wisdom #renaissance #art #deepthoughts "
+            "#philosophyquotes #mindset #existentialism #stoicism #motivation "
+            "#" + slug_tag + " #thinkers #lifequotes #intellectuals "
+            "#classicquotes #deepquotes #renaissanceart #classicalart"
         )
-        jpg_path = str(Path(mp4_path).with_suffix(".jpg"))
+        caption = "\n\n".join(caption_parts)
+
         generated.append({
             "philosopher": philosopher,
             "mp4_path": mp4_path,
-            "jpg_path": jpg_path,
+            "jpg_path": cover_jpg,
             "caption": caption,
         })
         log.info("  Reel ready: %s", mp4_path)
 
-    # ── Schedule & Upload ─────────────────────────────────────────────────────
     if not generated:
         log.warning("No reels generated. Exiting.")
         return
@@ -206,16 +238,15 @@ def main(upload_now: bool = True, single: bool = False, generate_only: bool = Fa
             log.info("  Uploading %s...", reel["philosopher"])
             try:
                 upload_reel(reel["mp4_path"], reel["caption"], reel.get("jpg_path"))
-                log.info("  ✓ Uploaded %s", reel["philosopher"])
+                log.info("  Uploaded %s", reel["philosopher"])
             except Exception as e:
-                log.error("  ✗ Upload failed for %s: %s", reel["philosopher"], e)
+                log.error("  Upload failed for %s: %s", reel["philosopher"], e)
     else:
         log.info("Scheduling %d reels...", len(generated))
         schedule_uploads(generated, upload_reel)
 
 
 def _philosopher_slug(name: str) -> str:
-    """Convert philosopher name to URL-safe slug."""
     slug = name.lower()
     replacements = {
         "ø": "o", "ü": "u", "ä": "a", "ö": "o",
@@ -228,14 +259,13 @@ def _philosopher_slug(name: str) -> str:
     return "".join(c for c in slug if c.isalnum() or c == "-")
 
 
-def _download_audio(song_url: str, cache_dir: Path, state: StateManager) -> str | None:
-    """Download audio via yt-dlp. Returns local .m4a path or None on failure."""
+def _download_audio(song_url, cache_dir, state):
     import re
     import subprocess
 
     match = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})", song_url)
     video_id = match.group(1) if match else hashlib.md5(song_url.encode()).hexdigest()[:11]
-    cached = cache_dir / f"{video_id}.m4a"
+    cached = cache_dir / (video_id + ".m4a")
 
     if cached.exists() and cached.stat().st_size > 0:
         return str(cached)
@@ -245,7 +275,7 @@ def _download_audio(song_url: str, cache_dir: Path, state: StateManager) -> str 
         "--format", "bestaudio",
         "--extract-audio",
         "--audio-format", "m4a",
-        "--output", str(cache_dir / f"{video_id}.%(ext)s"),
+        "--output", str(cache_dir / (video_id + ".%(ext)s")),
     ]
     cookies_file = os.environ.get("YOUTUBE_COOKIES_FILE")
     if cookies_file and Path(cookies_file).exists():
