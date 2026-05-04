@@ -81,12 +81,15 @@ jobs:
           fi
         continue-on-error: true
 
-      - name: Download font
+      - name: Download fonts
         run: |
           mkdir -p fonts
           curl -fsSL \
             "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf" \
             -o fonts/PlayfairDisplay-Regular.ttf
+          curl -fsSL \
+            "https://github.com/google/fonts/raw/main/ofl/inter/Inter%5Bopsz%2Cwght%5D.ttf" \
+            -o fonts/Inter-Regular.ttf
 
       - name: Write YouTube cookies
         run: |

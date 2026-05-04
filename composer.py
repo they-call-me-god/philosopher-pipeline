@@ -5,9 +5,10 @@
 - compose_image()/compose_reel(): backward-compat shims for legacy callers.
 
 Tuned for IG Reels algorithm:
-- 0.25 s/frame -> "edit" feel
-- 7 s reel -> short enough that viewers loop 3-4 times before scrolling
+- 0.30 s/frame -> energetic but readable
+- 8 s reel -> short enough that viewers loop 3-4 times before scrolling
 - Seamless loop: last frame matches first frame so the loop boundary is invisible
+- Quote uses serif (Playfair); attribution uses lighter sans-serif (Inter) when available
 """
 import logging
 import tempfile
@@ -21,22 +22,48 @@ log = logging.getLogger(__name__)
 
 REEL_WIDTH = 1080
 REEL_HEIGHT = 1920
-TEXT_MAX_WIDTH_RATIO = 0.82
-FONT_SIZE_START = 72
-FONT_SIZE_MIN = 36
-FONT_SIZE_STEP = 4
+TEXT_MAX_WIDTH_RATIO = 0.76
+
+# Quote (serif) sizing — smaller, more readable
+QUOTE_FONT_START = 54
+QUOTE_FONT_MIN = 26
+QUOTE_FONT_STEP = 3
+
+# Attribution (philosopher name) sizing — about 60% of fitted quote size
+NAME_FONT_RATIO = 0.62
+NAME_FONT_MIN = 22
 
 WATERMARK_TEXT = "@deepahhthinking"
-WATERMARK_OPACITY = 120
-WATERMARK_FONT_SIZE = 34
+WATERMARK_OPACITY = 130
+WATERMARK_FONT_SIZE = 30
 
-# Reel pacing tuned for IG retention / replay rate.
-DEFAULT_FRAME_DURATION = 0.25  # ultra-fast cuts, looks like an edit
-DEFAULT_REEL_DURATION = 7      # short, encourages 3-4 replays before scroll
-SEAMLESS_LOOP = True           # last frame == first frame so the IG loop is invisible
+# Reel pacing
+DEFAULT_FRAME_DURATION = 0.30
+DEFAULT_REEL_DURATION = 8
+SEAMLESS_LOOP = True
 
-# TODO(next): export the per-frame composed JPGs as a CapCut template payload
-# (CapCut "image-template" JSON pointing to the frame stack + audio).
+
+def _load_font(font_path, size):
+    """Load TTF; fall back to PIL default on failure."""
+    try:
+        return ImageFont.truetype(str(font_path), size)
+    except (IOError, OSError):
+        return ImageFont.load_default()
+
+
+def _resolve_name_font(font_path):
+    """Prefer a sans-serif (Inter) for the attribution; fall back to the quote font."""
+    p = Path(font_path)
+    candidates = [
+        p.parent / "Inter-Medium.ttf",
+        p.parent / "Inter-Regular.ttf",
+        p.parent / "Inter.ttf",
+        p,
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return p
 
 
 def compose_frame(
@@ -55,55 +82,85 @@ def compose_frame(
     src = Image.open(BytesIO(p.read_bytes())).convert("RGB")
     base = _fit_to_reel_color(src)
 
-    full_text = '"' + quote + '"' + "\n- " + philosopher
+    name_font_path = _resolve_name_font(font_path)
+
+    quote_text = '“' + quote + '”'
+    name_text = "— " + philosopher.upper()
+
     max_px_width = int(REEL_WIDTH * TEXT_MAX_WIDTH_RATIO)
-    max_px_height = int(REEL_HEIGHT * 0.55)
+    max_px_height = int(REEL_HEIGHT * 0.50)
 
     measure_draw = ImageDraw.Draw(base)
-    font_size = FONT_SIZE_START
-    font = ImageFont.truetype(font_path, font_size)
-    wrapped = _wrap_text(full_text, font, measure_draw, max_px_width)
 
-    while font_size > FONT_SIZE_MIN:
-        font = ImageFont.truetype(font_path, font_size)
-        wrapped = _wrap_text(full_text, font, measure_draw, max_px_width)
-        bbox = measure_draw.multiline_textbbox((0, 0), wrapped, font=font)
+    # Auto-fit the quote
+    quote_size = QUOTE_FONT_START
+    quote_font = _load_font(font_path, quote_size)
+    wrapped = _wrap_text(quote_text, quote_font, measure_draw, max_px_width)
+
+    while quote_size > QUOTE_FONT_MIN:
+        quote_font = _load_font(font_path, quote_size)
+        wrapped = _wrap_text(quote_text, quote_font, measure_draw, max_px_width)
+        bbox = measure_draw.multiline_textbbox((0, 0), wrapped, font=quote_font, spacing=10)
         if (bbox[2] - bbox[0]) <= max_px_width and (bbox[3] - bbox[1]) <= max_px_height:
             break
-        font_size -= FONT_SIZE_STEP
+        quote_size -= QUOTE_FONT_STEP
     else:
-        font = ImageFont.truetype(font_path, FONT_SIZE_MIN)
-        wrapped = _wrap_text(full_text, font, measure_draw, max_px_width)
-        wrapped = _truncate_text(wrapped, font, measure_draw, max_px_width)
+        quote_font = _load_font(font_path, QUOTE_FONT_MIN)
+        wrapped = _wrap_text(quote_text, quote_font, measure_draw, max_px_width)
+        wrapped = _truncate_text(wrapped, quote_font, measure_draw, max_px_width)
 
-    bbox = measure_draw.multiline_textbbox((0, 0), wrapped, font=font)
-    text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
+    quote_bbox = measure_draw.multiline_textbbox((0, 0), wrapped, font=quote_font, spacing=10)
+    quote_w = quote_bbox[2] - quote_bbox[0]
+    quote_h = quote_bbox[3] - quote_bbox[1]
+
+    name_size = max(NAME_FONT_MIN, int(quote_size * NAME_FONT_RATIO))
+    name_font = _load_font(name_font_path, name_size)
+    name_bbox = measure_draw.textbbox((0, 0), name_text, font=name_font)
+    name_w = name_bbox[2] - name_bbox[0]
+    name_h = name_bbox[3] - name_bbox[1]
+
+    gap = max(18, int(quote_size * 0.45))
+    total_h = quote_h + gap + name_h
 
     cx = REEL_WIDTH // 2
     cy = REEL_HEIGHT // 2
+    quote_top = cy - total_h // 2
+    name_top = quote_top + quote_h + gap
 
-    band_pad_x = 48
-    band_pad_y = 40
-    band_left = max(0, (REEL_WIDTH - text_w) // 2 - band_pad_x)
-    band_right = min(REEL_WIDTH, (REEL_WIDTH + text_w) // 2 + band_pad_x)
-    band_top = max(0, cy - text_h // 2 - band_pad_y)
-    band_bot = min(REEL_HEIGHT, cy + text_h // 2 + band_pad_y)
+    # Translucent band behind text
+    band_pad_x = 60
+    band_pad_y = 48
+    band_left = max(0, cx - max(quote_w, name_w) // 2 - band_pad_x)
+    band_right = min(REEL_WIDTH, cx + max(quote_w, name_w) // 2 + band_pad_x)
+    band_top = max(0, quote_top - band_pad_y)
+    band_bot = min(REEL_HEIGHT, name_top + name_h + band_pad_y)
 
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
     odraw = ImageDraw.Draw(overlay)
-    odraw.rectangle((band_left, band_top, band_right, band_bot), fill=(0, 0, 0, 150))
+    odraw.rectangle((band_left, band_top, band_right, band_bot), fill=(0, 0, 0, 140))
 
+    # Quote (serif) — drop shadow + white
     odraw.multiline_text(
-        (cx + 2, cy + 2), wrapped, font=font, fill=(0, 0, 0, 220),
-        align="center", anchor="mm",
+        (cx + 2, quote_top + 2), wrapped, font=quote_font, fill=(0, 0, 0, 220),
+        align="center", anchor="ma", spacing=10,
     )
     odraw.multiline_text(
-        (cx, cy), wrapped, font=font, fill=(255, 255, 255, 255),
-        align="center", anchor="mm",
+        (cx, quote_top), wrapped, font=quote_font, fill=(255, 255, 255, 255),
+        align="center", anchor="ma", spacing=10,
     )
 
-    wfont = ImageFont.truetype(font_path, WATERMARK_FONT_SIZE)
+    # Attribution (sans-serif, lighter)
+    odraw.text(
+        (cx + 1, name_top + 1), name_text, font=name_font, fill=(0, 0, 0, 200),
+        anchor="ma",
+    )
+    odraw.text(
+        (cx, name_top), name_text, font=name_font, fill=(220, 220, 220, 245),
+        anchor="ma",
+    )
+
+    # Watermark
+    wfont = _load_font(font_path, WATERMARK_FONT_SIZE)
     wbbox = odraw.textbbox((0, 0), watermark_text, font=wfont)
     wtw = wbbox[2] - wbbox[0]
     wth = wbbox[3] - wbbox[1]
@@ -127,12 +184,7 @@ def compose_slideshow(
     reel_duration=DEFAULT_REEL_DURATION,
     seamless_loop=SEAMLESS_LOOP,
 ):
-    """Render N image frames and concat them into a fast-cut reel with audio.
-
-    seamless_loop: when True, the trailing concat-demuxer entry is rewritten
-    so the last visible frame matches the first frame, hiding the IG auto-loop
-    boundary and inflating average watch time per impression.
-    """
+    """Render N image frames and concat them into a fast-cut reel with audio."""
     if not image_paths:
         raise ValueError("compose_slideshow requires at least one image")
 
@@ -157,15 +209,15 @@ def compose_slideshow(
         if not frame_files:
             raise RuntimeError("No frames composed - all images failed")
 
+        log.info("Composed %d/%d frames from %d unique images",
+                 len(frame_files), needed, len(image_paths))
+
         concat_path = workdir / "concat.txt"
         lines = []
         APOS = chr(39)
         for f in frame_files:
             lines.append("file " + APOS + f.as_posix() + APOS)
             lines.append("duration " + str(frame_duration))
-        # ffmpeg concat demuxer requires the final file repeated (without duration).
-        # If seamless_loop is set, we repeat frame 0 instead of the last frame so
-        # the loop boundary is visually invisible on Instagram's auto-replay.
         loop_target = frame_files[0] if seamless_loop and len(frame_files) > 1 else frame_files[-1]
         lines.append("file " + APOS + loop_target.as_posix() + APOS)
         concat_path.write_text("\n".join(lines), encoding="utf-8")
@@ -259,7 +311,7 @@ def _truncate_text(text, font, draw, max_width):
 
 
 def compose_image(photo_path, quote, philosopher, output_path, font_path):
-    """Legacy entry point - now color (no B&W) with watermark."""
+    """Legacy entry point, color frame with watermark."""
     compose_frame(photo_path, quote, philosopher, output_path, font_path)
 
 

@@ -13,8 +13,6 @@ _IS_WINDOWS = sys.platform == "win32"
 
 
 def _is_cloud_only(path: Path) -> bool:
-    """Return True if the file is an OneDrive cloud-only placeholder.
-    Always returns False on non-Windows platforms."""
     if not _IS_WINDOWS:
         return False
     attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
@@ -24,7 +22,6 @@ def _is_cloud_only(path: Path) -> bool:
 
 
 log = logging.getLogger(__name__)
-
 
 WIKIMEDIA_API = "https://commons.wikimedia.org/w/api.php"
 HEADERS = {"User-Agent": "PhilosopherPipeline/1.0 (instagram-content-bot; python-requests)"}
@@ -128,8 +125,6 @@ PHILOSOPHER_QUOTES = {
         "Kind words do not cost much. Yet they accomplish much.",
     ],
 }
-# Alias for non-ASCII spelling
-PHILOSOPHER_QUOTES["ø"[0:0] + "soren kierkegaard"] = PHILOSOPHER_QUOTES["soren kierkegaard"]
 PHILOSOPHER_QUOTES["søren kierkegaard"] = PHILOSOPHER_QUOTES["soren kierkegaard"]
 
 
@@ -141,7 +136,7 @@ PHILOSOPHER_VIBES = {
     "friedrich nietzsche":  ["dominant", "aggressive", "powerful", "intense", "dark", "relentless"],
     "simone de beauvoir":   ["atmospheric", "ethereal", "cinematic", "melancholic", "drift"],
     "soren kierkegaard":    ["melancholic", "contemplative", "sorrowful", "nostalgic", "ethereal"],
-    "søren kierkegaard": ["melancholic", "contemplative", "sorrowful", "nostalgic", "ethereal"],
+    "søren kierkegaard":    ["melancholic", "contemplative", "sorrowful", "nostalgic", "ethereal"],
     "arthur schopenhauer":  ["crushing", "heavy", "sorrowful", "dark", "slowed", "pessimistic"],
     "marcus aurelius":      ["dominant", "stoic", "resolute", "mechanical", "cold", "powerful"],
     "immanuel kant":        ["cold", "mechanical", "precise", "cinematic", "atmospheric"],
@@ -167,22 +162,40 @@ PHILOSOPHER_BIOS = {
 }
 
 
+# Expanded Renaissance + Baroque categories for higher hit rate
 RENAISSANCE_CATEGORIES = [
     "Italian_Renaissance_paintings",
     "Northern_Renaissance_paintings",
     "High_Renaissance_paintings",
     "Early_Renaissance_paintings",
     "Paintings_of_the_Italian_Renaissance",
+    "Paintings_by_Caravaggio",
+    "Paintings_by_Rembrandt",
+    "Baroque_paintings",
+    "16th-century_oil_paintings",
+    "17th-century_oil_paintings",
+    "Paintings_by_Raphael",
+    "Paintings_by_Titian",
+    "Paintings_by_Leonardo_da_Vinci",
+    "Paintings_by_Michelangelo",
+]
+
+# Multiple portrait search queries to maximize image yield per philosopher
+PORTRAIT_QUERIES = [
+    "{name} portrait painting",
+    "{name} portrait",
+    "{name} oil painting",
+    "{name} bust",
+    "{name} engraving",
+    "{name} photograph",
 ]
 
 
 def get_bio(philosopher: str) -> str:
-    """Return a 1-2 sentence biographical blurb for the philosopher, or empty string."""
     return PHILOSOPHER_BIOS.get(philosopher.lower(), "")
 
 
 def fetch_quote(philosopher: str, used_quotes: list) -> dict:
-    """Returns {"quote": str, "reframed": bool} from curated hardcoded quotes."""
     all_quotes = PHILOSOPHER_QUOTES.get(philosopher.lower(), [])
     used_set = set(used_quotes)
     fresh = [q for q in all_quotes if q not in used_set]
@@ -195,7 +208,6 @@ def fetch_quote(philosopher: str, used_quotes: list) -> dict:
 
 
 def match_song(philosopher, quote, songs, used_in_run, used_for_philosopher):
-    """Returns the YouTube URL of the best vibe match using keyword overlap."""
     last_3_used = set(used_for_philosopher[-3:])
     run_used = set(used_in_run)
 
@@ -217,94 +229,53 @@ def match_song(philosopher, quote, songs, used_in_run, used_for_philosopher):
 
 
 def fetch_photo(philosopher, used_photos, cache_dir):
-    """Downloads a single Wikimedia portrait. Returns local file path or None."""
-    cache_dir = Path(cache_dir)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    slug = philosopher.lower().replace(" ", "-")
+    """Single-portrait fetch (legacy; backed by fetch_portraits)."""
+    portraits = fetch_portraits(philosopher, 1, used_photos, cache_dir)
+    return portraits[0] if portraits else None
 
+
+def _wikimedia_search(query, srlimit=40):
+    params = {
+        "action": "query", "list": "search", "format": "json",
+        "srnamespace": "6", "srsearch": query, "srlimit": str(srlimit),
+    }
+    time.sleep(0.6)
+    resp = requests.get(WIKIMEDIA_API, params=params, timeout=30, headers=HEADERS)
+    resp.raise_for_status()
+    return resp.json().get("query", {}).get("search", [])
+
+
+def _wikimedia_imageinfo(title):
+    params = {
+        "action": "query", "titles": title, "prop": "imageinfo",
+        "iiprop": "url|size", "format": "json",
+    }
+    time.sleep(0.3)
+    resp = requests.get(WIKIMEDIA_API, params=params, timeout=30, headers=HEADERS)
+    resp.raise_for_status()
+    return resp.json().get("query", {}).get("pages", {})
+
+
+def _download_to_cache(url, cached_path):
+    if cached_path.exists() and cached_path.stat().st_size > 0:
+        return True
     try:
-        search_params = {
-            "action": "query", "list": "search", "format": "json",
-            "srnamespace": "6",
-            "srsearch": philosopher + " portrait",
-            "srlimit": "20",
-        }
-        time.sleep(1)
-        resp = requests.get(WIKIMEDIA_API, params=search_params, timeout=30, headers=HEADERS)
-        resp.raise_for_status()
-        results = resp.json().get("query", {}).get("search", [])
-
-        for item in results:
-            title = item["title"]
-            if not any(title.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png"]):
-                continue
-            if any(skip in title.lower() for skip in [
-                "svg", "flag", "coat", "seal", "map",
-                "collage", "comparison", "composite", "group",
-                "versus", "_vs_", "bust", "statue", "memorial",
-                "caricature", "cartoon", "drawing", "illustration",
-            ]):
-                continue
-
-            info_params = {
-                "action": "query", "titles": title, "prop": "imageinfo",
-                "iiprop": "url|size", "format": "json",
-            }
-            time.sleep(0.5)
-            info_resp = requests.get(WIKIMEDIA_API, params=info_params, timeout=30, headers=HEADERS)
-            info_resp.raise_for_status()
-            pages = info_resp.json().get("query", {}).get("pages", {})
-            for page in pages.values():
-                infos = page.get("imageinfo", [])
-                if not infos:
-                    continue
-                info = infos[0]
-                url = info["url"]
-                w, h = info.get("width", 0), info.get("height", 0)
-
-                if w < 600 or h < 600:
-                    continue
-                if w > h:
-                    continue
-
-                url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
-                filename = slug + "-" + url_hash + ".jpg"
-
-                if filename in used_photos:
-                    continue
-
-                cached = cache_dir / filename
-                if not cached.exists() or cached.stat().st_size == 0:
-                    time.sleep(0.5)
-                    img_resp = requests.get(url, timeout=30, headers=HEADERS)
-                    img_resp.raise_for_status()
-                    cached.write_bytes(img_resp.content)
-
-                if _is_cloud_only(cached):
-                    log.warning("Skipping cloud-only cached photo: %s", filename)
-                    continue
-
-                return str(cached)
-
+        time.sleep(0.3)
+        img_resp = requests.get(url, timeout=60, headers=HEADERS)
+        img_resp.raise_for_status()
+        cached_path.write_bytes(img_resp.content)
+        return cached_path.stat().st_size > 0
     except Exception as e:
-        log.warning("Wikimedia fetch failed for %s: %s, using cache fallback.", philosopher, e)
-
-    cached_photos = sorted(cache_dir.glob(slug + "-*.jpg"))
-    for p in cached_photos:
-        if p.name not in used_photos and p.stat().st_size > 0 and not _is_cloud_only(p):
-            return str(p)
-    for p in cached_photos:
-        if p.stat().st_size > 0 and not _is_cloud_only(p):
-            return str(p)
-
-    return None
+        log.warning("Image download failed (%s): %s", url, e)
+        return False
 
 
 def fetch_portraits(philosopher, count, used_portraits, cache_dir):
-    """Fetch up to `count` distinct portrait images of the philosopher.
+    """Fetch up to `count` distinct images of the philosopher.
 
-    Searches Wikimedia for `<name> portrait painting`. Falls back to cached
-    portraits (including legacy fetch_photo cache) when API limits hit.
+    Strategy: try every PORTRAIT_QUERIES variant, lowered min size 400x400.
+    Falls back hard to local cache (any era) when API yields nothing,
+    so the slideshow always has frames even if Wikimedia rate-limits.
     """
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -312,99 +283,80 @@ def fetch_portraits(philosopher, count, used_portraits, cache_dir):
     used_set = set(used_portraits)
     collected = []
 
-    try:
-        search_params = {
-            "action": "query", "list": "search", "format": "json",
-            "srnamespace": "6",
-            "srsearch": philosopher + " portrait painting",
-            "srlimit": "40",
-        }
-        time.sleep(1)
-        resp = requests.get(WIKIMEDIA_API, params=search_params, timeout=30, headers=HEADERS)
-        resp.raise_for_status()
-        results = resp.json().get("query", {}).get("search", [])
-    except Exception as e:
-        log.warning("Portrait search failed for %s: %s", philosopher, e)
-        results = []
-
-    for item in results:
+    for query_template in PORTRAIT_QUERIES:
         if len(collected) >= count:
             break
-        title = item.get("title", "")
-        if not any(title.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png"]):
-            continue
-        if any(skip in title.lower() for skip in [
-            "svg", "flag", "coat", "seal", "map",
-            "collage", "comparison", "composite", "group",
-            "versus", "_vs_", "caricature", "cartoon",
-        ]):
-            continue
+        query = query_template.format(name=philosopher)
         try:
-            info_params = {
-                "action": "query", "titles": title, "prop": "imageinfo",
-                "iiprop": "url|size", "format": "json",
-            }
-            time.sleep(0.4)
-            info_resp = requests.get(WIKIMEDIA_API, params=info_params, timeout=30, headers=HEADERS)
-            info_resp.raise_for_status()
-            pages = info_resp.json().get("query", {}).get("pages", {})
+            results = _wikimedia_search(query, srlimit=30)
         except Exception as e:
-            log.warning("Portrait info failed (%s): %s", title, e)
+            log.warning("Portrait search failed (%s): %s", query, e)
             continue
 
-        for page in pages.values():
-            infos = page.get("imageinfo", [])
-            if not infos:
+        for item in results:
+            if len(collected) >= count:
+                break
+            title = item.get("title", "")
+            if not any(title.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png"]):
                 continue
-            info = infos[0]
-            url = info["url"]
-            w, h = info.get("width", 0), info.get("height", 0)
-            if w < 500 or h < 500:
+            if any(skip in title.lower() for skip in [
+                "svg", "flag", "coat", "seal", "map",
+                "collage", "comparison", "composite", "group",
+                "versus", "_vs_", "caricature", "cartoon",
+            ]):
+                continue
+            try:
+                pages = _wikimedia_imageinfo(title)
+            except Exception as e:
+                log.warning("Portrait info failed (%s): %s", title, e)
                 continue
 
-            url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
-            filename = "portrait-" + slug + "-" + url_hash + ".jpg"
-            if filename in used_set:
-                continue
-
-            cached = cache_dir / filename
-            if not cached.exists() or cached.stat().st_size == 0:
-                try:
-                    time.sleep(0.4)
-                    img_resp = requests.get(url, timeout=60, headers=HEADERS)
-                    img_resp.raise_for_status()
-                    cached.write_bytes(img_resp.content)
-                except Exception as e:
-                    log.warning("Portrait download failed (%s): %s", url, e)
+            for page in pages.values():
+                infos = page.get("imageinfo", [])
+                if not infos:
                     continue
-            if _is_cloud_only(cached) or cached.stat().st_size == 0:
-                continue
-            collected.append(str(cached))
+                info = infos[0]
+                url = info["url"]
+                w, h = info.get("width", 0), info.get("height", 0)
+                if w < 400 or h < 400:
+                    continue
 
+                url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+                filename = "portrait-" + slug + "-" + url_hash + ".jpg"
+                if filename in used_set:
+                    continue
+
+                cached = cache_dir / filename
+                if not _download_to_cache(url, cached):
+                    continue
+                if _is_cloud_only(cached):
+                    continue
+                collected.append(str(cached))
+
+    # Fallback: any non-used local file matching the philosopher
     if len(collected) < count:
-        for p in sorted(cache_dir.glob("portrait-" + slug + "-*.jpg")):
-            sp = str(p)
-            if sp in collected:
-                continue
-            if p.stat().st_size > 0 and not _is_cloud_only(p):
-                collected.append(sp)
-                if len(collected) >= count:
-                    break
-        # Legacy fetch_photo cached portraits
-        for p in sorted(cache_dir.glob(slug + "-*.jpg")):
-            sp = str(p)
-            if sp in collected:
-                continue
-            if p.stat().st_size > 0 and not _is_cloud_only(p):
-                collected.append(sp)
-                if len(collected) >= count:
-                    break
+        for pattern in ("portrait-" + slug + "-*.jpg", slug + "-*.jpg"):
+            for p in sorted(cache_dir.glob(pattern)):
+                sp = str(p)
+                if sp in collected:
+                    continue
+                if p.stat().st_size > 0 and not _is_cloud_only(p):
+                    collected.append(sp)
+                    if len(collected) >= count:
+                        break
+            if len(collected) >= count:
+                break
 
+    log.info("Portraits for %s: %d/%d", philosopher, len(collected), count)
     return collected[:count]
 
 
 def fetch_paintings(count, used_paintings, cache_dir):
-    """Fetch up to `count` Renaissance paintings from Wikimedia Commons categories."""
+    """Fetch up to `count` Renaissance/Baroque paintings.
+
+    Lowered min size to 600x600 (was 800) to capture more of the catalog,
+    and shuffles a wider category list. Hard fallback to local cache last.
+    """
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -424,7 +376,7 @@ def fetch_paintings(count, used_paintings, cache_dir):
                 "cmtype": "file", "cmtitle": "Category:" + category,
                 "cmlimit": "200",
             }
-            time.sleep(1)
+            time.sleep(0.8)
             resp = requests.get(WIKIMEDIA_API, params=params, timeout=30, headers=HEADERS)
             resp.raise_for_status()
             members = resp.json().get("query", {}).get("categorymembers", [])
@@ -440,14 +392,7 @@ def fetch_paintings(count, used_paintings, cache_dir):
             if not any(title.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png"]):
                 continue
             try:
-                info_params = {
-                    "action": "query", "titles": title, "prop": "imageinfo",
-                    "iiprop": "url|size", "format": "json",
-                }
-                time.sleep(0.35)
-                info_resp = requests.get(WIKIMEDIA_API, params=info_params, timeout=30, headers=HEADERS)
-                info_resp.raise_for_status()
-                pages = info_resp.json().get("query", {}).get("pages", {})
+                pages = _wikimedia_imageinfo(title)
             except Exception as e:
                 log.warning("Wikimedia info failed (%s): %s", title, e)
                 continue
@@ -459,7 +404,7 @@ def fetch_paintings(count, used_paintings, cache_dir):
                 info = infos[0]
                 url = info["url"]
                 w, h = info.get("width", 0), info.get("height", 0)
-                if w < 800 or h < 800:
+                if w < 600 or h < 600:
                     continue
                 if url in seen_urls:
                     continue
@@ -471,19 +416,13 @@ def fetch_paintings(count, used_paintings, cache_dir):
                     continue
 
                 cached = cache_dir / filename
-                if not cached.exists() or cached.stat().st_size == 0:
-                    try:
-                        time.sleep(0.35)
-                        img_resp = requests.get(url, timeout=60, headers=HEADERS)
-                        img_resp.raise_for_status()
-                        cached.write_bytes(img_resp.content)
-                    except Exception as e:
-                        log.warning("Painting download failed (%s): %s", url, e)
-                        continue
-                if _is_cloud_only(cached) or cached.stat().st_size == 0:
+                if not _download_to_cache(url, cached):
+                    continue
+                if _is_cloud_only(cached):
                     continue
                 collected.append(str(cached))
 
+    # Fallback: any cached painting still on disk
     if len(collected) < count:
         for p in sorted(cache_dir.glob("renaissance-*.jpg")):
             sp = str(p)
@@ -494,4 +433,5 @@ def fetch_paintings(count, used_paintings, cache_dir):
                 if len(collected) >= count:
                     break
 
+    log.info("Paintings: %d/%d", len(collected), count)
     return collected[:count]
