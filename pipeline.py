@@ -3,10 +3,15 @@
 Philosopher Instagram Pipeline
 Usage: python pipeline.py
 
-Generates a 7-second fast-cut Reel per philosopher using a mix of Renaissance
-paintings and portraits of the writer, with a translucent @deepahhthinking
-watermark. Caption is tuned for IG retention (hook -> quote -> bio -> CTA ->
-5 focused hashtags) so the post earns saves and replays.
+Generates a 7-second beat-synced Reel per philosopher using a mix of
+Renaissance paintings and portraits of the writer, with a translucent
+@deepahhthinking watermark. Cuts land on the actual song beats (librosa)
+with xfade transitions and Ken Burns zoom — no CapCut step required.
+
+Env vars:
+  USE_BEAT_SYNC  '1' (default) for beat-synced reels, '0' for the old uniform-cut path.
+  BEAT_TRANSITION  ffmpeg xfade name (default 'fadeblack'). 'auto' rotates through punchy ones.
+  KEN_BURNS  '1' (default) enables zoom-pan per slide, '0' to disable.
 """
 import hashlib
 import logging
@@ -30,7 +35,10 @@ from fetcher import (
     fetch_quote, match_song, fetch_photo,
     fetch_paintings, fetch_portraits, get_bio,
 )
-from composer import compose_image, compose_reel, compose_frame, compose_slideshow
+from composer import (
+    compose_image, compose_reel, compose_frame,
+    compose_slideshow, compose_slideshow_beat_synced,
+)
 from scheduler import schedule_uploads
 from uploader import upload_reel
 
@@ -52,12 +60,21 @@ CACHE_PAINTINGS = BASE_DIR / "cache" / "paintings"
 CACHE_AUDIO = BASE_DIR / "cache" / "audio"
 FONT_PATH = BASE_DIR / "fonts" / "PlayfairDisplay-Regular.ttf"
 
-# Slideshow mix: 8 paintings + 6 portraits = 14 unique images.
-# composer.compose_slideshow loops them to fill the 7s reel
-# at 0.25s/frame (28 frames), so each unique image appears ~2x.
-# That repetition + 7s length makes the reel a "loop magnet" on IG.
-NUM_PAINTINGS = 8
-NUM_PORTRAITS = 6
+# Slideshow mix: 12 paintings + 8 portraits = 20 unique images.
+# Beat-synced reels typically produce 18–25 cuts at 7s, so 20 unique
+# images keeps consecutive slides distinct without immediate repeats.
+NUM_PAINTINGS = 12
+NUM_PORTRAITS = 8
+
+
+def _env_bool(name, default=True):
+    return os.getenv(name, "1" if default else "0").strip().lower() not in ("0", "false", "no", "")
+
+
+USE_BEAT_SYNC = _env_bool("USE_BEAT_SYNC", default=True)
+BEAT_TRANSITION = os.getenv("BEAT_TRANSITION", "fadeblack").strip()
+KEN_BURNS = _env_bool("KEN_BURNS", default=True)
+REEL_DURATION = 7.0
 
 # Hooks rotate by post_count so the same opening line never repeats per
 # philosopher, which avoids the IG "duplicate caption" downranking.
@@ -80,9 +97,6 @@ CTA_LINE = (
     "save this for the day you need it.\n"
     "follow @deepahhthinking for daily wisdom that actually rewires how you think."
 )
-
-# TODO(next): emit a CapCut-template JSON alongside the .mp4 so the
-# slideshow can be re-edited inside the CapCut app (image stack + beat map).
 
 RUN_ID = time.strftime("%Y-%m-%dT%H%M%S")
 
@@ -140,6 +154,12 @@ def main(upload_now=True, single=False, generate_only=False):
         )
 
     log.info("Run ID: %s", RUN_ID)
+    log.info(
+        "Mode: %s | transition=%s | ken_burns=%s",
+        "beat-synced" if USE_BEAT_SYNC else "uniform-cut",
+        BEAT_TRANSITION if USE_BEAT_SYNC else "n/a",
+        KEN_BURNS if USE_BEAT_SYNC else "n/a",
+    )
     log.info("Processing %d philosophers...", len(philosophers))
 
     generated = []
@@ -153,7 +173,6 @@ def main(upload_now=True, single=False, generate_only=False):
         log.info("== %s ==", philosopher)
         phil_state = state.get_philosopher(philosopher)
 
-        # 1. Quote
         log.info("  Fetching quote...")
         try:
             quote_result = fetch_quote(philosopher, phil_state["used_quotes"])
@@ -164,7 +183,6 @@ def main(upload_now=True, single=False, generate_only=False):
         reframed = quote_result["reframed"]
         log.info("  Quote: %s...", quote[:60])
 
-        # 2. Song match
         log.info("  Matching song...")
         try:
             song_url = match_song(
@@ -179,7 +197,6 @@ def main(upload_now=True, single=False, generate_only=False):
         used_songs_this_run.append(song_url)
         log.info("  Song: %s", song_url)
 
-        # 3. Image stack: Renaissance paintings + writer portraits, interleaved.
         log.info("  Fetching %d paintings + %d portraits of %s...",
                  NUM_PAINTINGS, NUM_PORTRAITS, philosopher)
         try:
@@ -201,7 +218,6 @@ def main(upload_now=True, single=False, generate_only=False):
         log.info("  Got %d frames (%d paintings + %d portraits)",
                  len(frames), len(paintings), len(portraits))
 
-        # 4. Audio
         log.info("  Downloading audio...")
         audio_path = _download_audio(song_url, CACHE_AUDIO, state)
         if not audio_path:
@@ -209,18 +225,31 @@ def main(upload_now=True, single=False, generate_only=False):
             continue
         log.info("  Audio: %s", audio_path)
 
-        # 5. Compose slideshow + cover thumbnail.
-        # composer defaults are 0.25s/frame, 7s reel, seamless loop on.
         slug = _philosopher_slug(philosopher)
         mp4_path = str(OUTPUT_DIR / (slug + "-" + RUN_ID + ".mp4"))
         cover_jpg = str(OUTPUT_DIR / (slug + "-" + RUN_ID + ".jpg"))
 
-        log.info("  Composing 7s fast-cut slideshow...")
+        log.info(
+            "  Composing %.0fs %s slideshow...",
+            REEL_DURATION,
+            "beat-synced" if USE_BEAT_SYNC else "fast-cut",
+        )
         try:
-            compose_slideshow(
-                frames, quote, philosopher,
-                audio_path, mp4_path, str(FONT_PATH),
-            )
+            if USE_BEAT_SYNC:
+                compose_slideshow_beat_synced(
+                    frames, quote, philosopher,
+                    audio_path, mp4_path, str(FONT_PATH),
+                    reel_duration=REEL_DURATION,
+                    transition=BEAT_TRANSITION,
+                    transition_duration=0.18,
+                    ken_burns=KEN_BURNS,
+                    seamless_loop=True,
+                )
+            else:
+                compose_slideshow(
+                    frames, quote, philosopher,
+                    audio_path, mp4_path, str(FONT_PATH),
+                )
         except Exception as e:
             log.warning("  Slideshow composition failed for %s: %s, skipping.", philosopher, e)
             continue
@@ -235,12 +264,10 @@ def main(upload_now=True, single=False, generate_only=False):
             log.warning("  Reel file missing or empty for %s, skipping.", philosopher)
             continue
 
-        # 6. State update (record every painting + portrait used in the reel)
         all_filenames = [Path(p).name for p in (paintings + portraits)]
         state.update_philosopher(philosopher, quote, song_url, all_filenames, reframed)
         log.info("  State updated.")
 
-        # 7. Caption with rotating hook + bio + CTA + focused hashtags
         bio = get_bio(philosopher)
         slug_tag = slug.replace("-", "")[:20]
         hook = HOOKS[phil_state["post_count"] % len(HOOKS)]
@@ -276,7 +303,7 @@ def main(upload_now=True, single=False, generate_only=False):
         schedule_uploads(generated, upload_reel)
 
 
-def _philosopher_slug(name: str) -> str:
+def _philosopher_slug(name):
     slug = name.lower()
     replacements = {
         "ø": "o", "ü": "u", "ä": "a", "ö": "o",

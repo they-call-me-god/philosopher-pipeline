@@ -1,7 +1,9 @@
 """Image and slideshow composition for philosopher reels.
 
 - compose_frame(): one image + quote + translucent watermark -> 1080x1920 JPG.
-- compose_slideshow(): N composed frames + audio -> fast-cut MP4 reel.
+- compose_slideshow(): N composed frames + audio -> fast-cut MP4 reel (uniform timing).
+- compose_slideshow_beat_synced(): cuts land on song beats, xfade transitions,
+  optional Ken Burns zoom. The "edited reel without CapCut" path.
 - compose_image()/compose_reel(): backward-compat shims for legacy callers.
 
 Tuned for IG Reels algorithm:
@@ -11,6 +13,7 @@ Tuned for IG Reels algorithm:
 - Quote uses serif (Playfair); attribution uses lighter sans-serif (Inter) when available
 """
 import logging
+import subprocess
 import tempfile
 from io import BytesIO
 from pathlib import Path
@@ -333,3 +336,243 @@ def compose_reel(image_path, audio_path, output_path, duration=30):
         )
     except ffmpeg.Error as e:
         raise RuntimeError("ffmpeg failed: " + e.stderr.decode()[-300:])
+
+
+# ─── Beat-synced slideshow ───────────────────────────────────────────────────
+# librosa detects beats in the song. Slides change exactly on each beat,
+# crossfade transitions soften the cuts, and an optional Ken Burns zoom-pan
+# keeps each slide from feeling static. No CapCut, no manual editing.
+
+# xfade transitions worth using (ffmpeg has 50+, these are the clean ones):
+#   fade, fadeblack, fadewhite, slideleft, slideright, slideup, slidedown,
+#   circleopen, circleclose, rectcrop, distance, dissolve, pixelize, radial,
+#   wipeleft, wiperight, wipeup, wipedown, smoothleft, smoothright, zoomin
+TRANSITIONS_PUNCHY = ["fadeblack", "circleopen", "wipeleft", "smoothright", "slideup"]
+TRANSITIONS_SOFT = ["fade", "dissolve", "smoothleft", "wiperight"]
+
+MIN_SEGMENT_SECONDS = 0.18  # don't cut faster than this — reads as visual noise
+MAX_SEGMENT_SECONDS = 0.90  # split anything longer onto sub-beats
+
+
+def detect_beats(audio_path, max_duration=8.0, downbeat_only=False):
+    """Return (beat_times, tempo_bpm) within [0, max_duration].
+
+    Falls back to evenly-spaced beats at 120 BPM if librosa is missing or fails,
+    so the caller never has to special-case it.
+    """
+    try:
+        import librosa  # heavy import, kept local
+    except ImportError:
+        log.warning("librosa not installed — falling back to fixed 120 BPM grid")
+        return _fixed_grid_beats(max_duration, 120.0), 120.0
+
+    try:
+        import numpy as np  # librosa already requires numpy
+        y, sr = librosa.load(str(audio_path), sr=None, duration=max_duration + 1.0)
+        tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr, units="time")
+        flat_beats = np.atleast_1d(beat_frames).ravel().tolist()
+        beats = [float(t) for t in flat_beats if 0.0 < t < max_duration]
+        tempo_arr = np.atleast_1d(tempo).ravel()
+        tempo_val = float(tempo_arr[0]) if tempo_arr.size > 0 else 120.0
+    except Exception as e:
+        log.warning("beat detection failed (%s) — falling back to fixed grid", e)
+        return _fixed_grid_beats(max_duration, 120.0), 120.0
+
+    if downbeat_only:
+        beats = beats[::4]
+
+    if 0.0 not in beats[:1]:
+        beats.insert(0, 0.0)
+    if not beats or beats[-1] < max_duration - 0.05:
+        beats.append(float(max_duration))
+
+    return beats, tempo_val
+
+
+def _fixed_grid_beats(duration, bpm):
+    """Generate evenly-spaced 'beat' times when librosa isn't available."""
+    period = 60.0 / bpm
+    t = 0.0
+    out = [0.0]
+    while t + period < duration:
+        t += period
+        out.append(round(t, 4))
+    if out[-1] < duration - 0.05:
+        out.append(float(duration))
+    return out
+
+
+def _segments_from_beats(beat_times, target_duration):
+    """Convert beat times into segment durations, clamping outliers."""
+    raw = [beat_times[i + 1] - beat_times[i] for i in range(len(beat_times) - 1)]
+    cleaned = []
+    for s in raw:
+        if s < MIN_SEGMENT_SECONDS:
+            # Too tight — merge into previous if any
+            if cleaned:
+                cleaned[-1] += s
+            else:
+                cleaned.append(s)
+        elif s > MAX_SEGMENT_SECONDS:
+            # Split long gap into halves so we still cut
+            n_splits = int(s / MAX_SEGMENT_SECONDS) + 1
+            piece = s / n_splits
+            cleaned.extend([piece] * n_splits)
+        else:
+            cleaned.append(s)
+
+    if not cleaned:
+        return [target_duration]
+
+    total = sum(cleaned)
+    if total <= 0:
+        return [target_duration]
+    scale = target_duration / total
+    return [s * scale for s in cleaned]
+
+
+def compose_slideshow_beat_synced(
+    image_paths,
+    quote,
+    philosopher,
+    audio_path,
+    output_path,
+    font_path,
+    reel_duration=8.0,
+    transition="fadeblack",
+    transition_duration=0.18,
+    ken_burns=True,
+    seamless_loop=True,
+    downbeat_only=False,
+):
+    """Render a slideshow whose cuts land on the song's detected beats.
+
+    Each cut is an xfade transition (fade / fadeblack / circleopen / etc.).
+    With ken_burns=True every slide slowly zooms (alternating in/out) so
+    the reel never feels static — that's the CapCut "movement" feel.
+    """
+    if not image_paths:
+        raise ValueError("compose_slideshow_beat_synced requires at least one image")
+
+    beats, tempo = detect_beats(audio_path, max_duration=reel_duration, downbeat_only=downbeat_only)
+    segments = _segments_from_beats(beats, reel_duration)
+    n_segments = len(segments)
+
+    log.info(
+        "beat-synced reel: tempo=%.0f BPM, %d cuts, durations=%s",
+        tempo, n_segments, ["%.2f" % s for s in segments],
+    )
+
+    workdir = Path(tempfile.mkdtemp(prefix="reel-beat-"))
+    try:
+        # Compose one frame per segment, cycling through images
+        frame_paths = []
+        for i in range(n_segments):
+            src_image = image_paths[i % len(image_paths)]
+            # Seamless loop: last frame matches first frame so the auto-replay is invisible
+            if seamless_loop and i == n_segments - 1 and n_segments > 1:
+                src_image = image_paths[0]
+            out = workdir / ("frame-" + str(i).zfill(4) + ".jpg")
+            try:
+                compose_frame(src_image, quote, philosopher, str(out), font_path)
+                frame_paths.append(out)
+            except Exception as e:
+                log.warning("frame %d failed (%s) - skipping", i, e)
+                if frame_paths:
+                    frame_paths.append(frame_paths[-1])
+
+        if not frame_paths:
+            raise RuntimeError("No frames composed - all images failed")
+
+        D = float(transition_duration)
+        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-stats"]
+
+        # One looped image input per segment, length = segment + transition overlap
+        for i, fp in enumerate(frame_paths):
+            length = segments[i] + D
+            cmd += ["-loop", "1", "-t", "%.4f" % length, "-i", str(fp)]
+        cmd += ["-i", str(audio_path)]
+        audio_idx = len(frame_paths)
+
+        # Build filter graph
+        parts = []
+        for i in range(len(frame_paths)):
+            parts.append(_clip_filter(i, segments[i] + D, ken_burns=ken_burns))
+
+        if len(frame_paths) == 1:
+            parts.append("[v0]copy[vout]")
+        else:
+            cumulative = 0.0
+            prev_label = "[v0]"
+            for i in range(1, len(frame_paths)):
+                cumulative += segments[i - 1]
+                offset = max(0.0, cumulative - D)
+                trans = transition
+                # Mix it up: rotate through punchy transitions if user passed "auto"
+                if transition == "auto":
+                    pool = TRANSITIONS_PUNCHY
+                    trans = pool[(i - 1) % len(pool)]
+                last = i == len(frame_paths) - 1
+                out_label = "[vout]" if last else "[x%d]" % i
+                parts.append(
+                    "%s[v%d]xfade=transition=%s:duration=%.4f:offset=%.4f%s"
+                    % (prev_label, i, trans, D, offset, out_label)
+                )
+                prev_label = out_label
+
+        filter_complex = ";".join(parts)
+
+        cmd += [
+            "-filter_complex", filter_complex,
+            "-map", "[vout]",
+            "-map", "%d:a" % audio_idx,
+            "-c:v", "libx264", "-crf", "23", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
+            "-r", "30",
+            "-t", "%.4f" % reel_duration,
+            "-shortest",
+            str(output_path),
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            tail = (result.stderr or "")[-500:]
+            raise RuntimeError("ffmpeg beat-sync failed: " + tail)
+    finally:
+        try:
+            for f in workdir.iterdir():
+                f.unlink()
+            workdir.rmdir()
+        except Exception:
+            pass
+
+
+def _clip_filter(idx, length_sec, ken_burns):
+    """Per-clip filter chain: scale, optional Ken Burns zoom, normalize for xfade.
+
+    xfade requires every input to share resolution, fps, pixel format, timebase.
+    """
+    base = "[%d:v]" % idx
+    if ken_burns:
+        # zoompan needs a high-res source so the zoom doesn't pixelate.
+        # Alternate zoom-in vs. zoom-out by clip index for visual rhythm.
+        d_frames = max(1, int(length_sec * 30))
+        if idx % 2 == 0:
+            z_expr = "min(zoom+0.0010,1.10)"     # slow zoom in
+        else:
+            z_expr = "if(eq(on,0),1.10,max(zoom-0.0010,1.00))"  # zoom out
+        return (
+            base
+            + "scale=2160:3840:force_original_aspect_ratio=increase,"
+            + "crop=2160:3840,"
+            + "zoompan=z='" + z_expr + "':"
+            + "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+            + "d=" + str(d_frames) + ":s=1080x1920:fps=30,"
+            + "setsar=1,format=yuv420p[v" + str(idx) + "]"
+        )
+    return (
+        base
+        + "scale=1080:1920:force_original_aspect_ratio=increase,"
+        + "crop=1080:1920,setsar=1,fps=30,format=yuv420p[v" + str(idx) + "]"
+    )
