@@ -72,7 +72,11 @@ def _env_bool(name, default=True):
 
 
 USE_BEAT_SYNC = _env_bool("USE_BEAT_SYNC", default=True)
-BEAT_TRANSITION = os.getenv("BEAT_TRANSITION", "fadeblack").strip()
+# 'auto' rotates through punchy slide/zoom/wipe transitions every cut (CapCut feel).
+# Set to a single name like 'slideleft' or 'zoomin' to lock one transition.
+BEAT_TRANSITION = os.getenv("BEAT_TRANSITION", "auto").strip()
+BEAT_TRANSITION_DURATION = float(os.getenv("BEAT_TRANSITION_DURATION", "0.10"))
+MIN_CUTS = int(os.getenv("MIN_CUTS", "16"))
 KEN_BURNS = _env_bool("KEN_BURNS", default=True)
 REEL_DURATION = 7.0
 
@@ -241,9 +245,10 @@ def main(upload_now=True, single=False, generate_only=False):
                     audio_path, mp4_path, str(FONT_PATH),
                     reel_duration=REEL_DURATION,
                     transition=BEAT_TRANSITION,
-                    transition_duration=0.18,
+                    transition_duration=BEAT_TRANSITION_DURATION,
                     ken_burns=KEN_BURNS,
                     seamless_loop=True,
+                    min_cuts=MIN_CUTS,
                 )
             else:
                 compose_slideshow(

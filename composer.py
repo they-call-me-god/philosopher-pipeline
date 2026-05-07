@@ -338,55 +338,69 @@ def compose_reel(image_path, audio_path, output_path, duration=30):
         raise RuntimeError("ffmpeg failed: " + e.stderr.decode()[-300:])
 
 
-# ─── Beat-synced slideshow ───────────────────────────────────────────────────
-# librosa detects beats in the song. Slides change exactly on each beat,
-# crossfade transitions soften the cuts, and an optional Ken Burns zoom-pan
-# keeps each slide from feeling static. No CapCut, no manual editing.
+# ─── CapCut-style fast-cut slideshow ─────────────────────────────────────────
+# Force at least 16 cuts in 7s regardless of song tempo. Detect beats AND
+# onset transients (drum hits, vocals) for finer rhythmic granularity, then
+# rotate through hard slide/zoom/wipe transitions (no fades). Each clip gets
+# a punchy zoom (1.0 -> 1.22) so motion never stops. Images shuffled with
+# no back-to-back repeats so the same painting never sits next to itself.
 
-# xfade transitions worth using (ffmpeg has 50+, these are the clean ones):
-#   fade, fadeblack, fadewhite, slideleft, slideright, slideup, slidedown,
-#   circleopen, circleclose, rectcrop, distance, dissolve, pixelize, radial,
-#   wipeleft, wiperight, wipeup, wipedown, smoothleft, smoothright, zoomin
-TRANSITIONS_PUNCHY = ["fadeblack", "circleopen", "wipeleft", "smoothright", "slideup"]
+# Punchy transitions only — no fade/fadeblack/fadewhite which wash out cuts.
+# These mimic the rotating transitions in CapCut's viral templates.
+TRANSITIONS_PUNCHY = [
+    "slideleft", "slideright", "slideup", "slidedown",
+    "zoomin", "smoothleft", "smoothright",
+    "wipeleft", "wiperight", "circleopen",
+]
+# Soft pool kept for callers that explicitly want a calm look.
 TRANSITIONS_SOFT = ["fade", "dissolve", "smoothleft", "wiperight"]
 
-MIN_SEGMENT_SECONDS = 0.18  # don't cut faster than this — reads as visual noise
-MAX_SEGMENT_SECONDS = 0.90  # split anything longer onto sub-beats
+MIN_SEGMENT_SECONDS = 0.20   # tighter cuts than this read as noise
+MAX_SEGMENT_SECONDS = 0.55   # any gap longer than this gets split
+MIN_CUTS_PER_REEL = 16       # CapCut feel: 16 cuts in a 7s reel, even on slow songs
 
 
-def detect_beats(audio_path, max_duration=8.0, downbeat_only=False):
-    """Return (beat_times, tempo_bpm) within [0, max_duration].
+def detect_hits(audio_path, max_duration=8.0):
+    """Return (hit_times, tempo_bpm) combining beats + onset transients.
 
-    Falls back to evenly-spaced beats at 120 BPM if librosa is missing or fails,
-    so the caller never has to special-case it.
+    Onset detection fires on every drum hit, snare, vocal entry — far more
+    cut points than beat tracking alone, so slow songs still cut frequently.
     """
     try:
-        import librosa  # heavy import, kept local
+        import librosa
     except ImportError:
         log.warning("librosa not installed — falling back to fixed 120 BPM grid")
         return _fixed_grid_beats(max_duration, 120.0), 120.0
 
     try:
-        import numpy as np  # librosa already requires numpy
+        import numpy as np
         y, sr = librosa.load(str(audio_path), sr=None, duration=max_duration + 1.0)
-        tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr, units="time")
-        flat_beats = np.atleast_1d(beat_frames).ravel().tolist()
-        beats = [float(t) for t in flat_beats if 0.0 < t < max_duration]
+
+        tempo, beat_times = librosa.beat.beat_track(y=y, sr=sr, units="time")
+        beats = np.atleast_1d(beat_times).ravel().tolist()
+
+        onset_times = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=False)
+        onsets = np.atleast_1d(onset_times).ravel().tolist()
+
+        # Union, dedupe within 0.10s, clip to window
+        all_hits = sorted(set(round(float(t), 3) for t in (list(beats) + list(onsets))))
+        hits = []
+        for t in all_hits:
+            if 0.0 < t < max_duration and (not hits or t - hits[-1] >= 0.10):
+                hits.append(t)
+
         tempo_arr = np.atleast_1d(tempo).ravel()
         tempo_val = float(tempo_arr[0]) if tempo_arr.size > 0 else 120.0
     except Exception as e:
-        log.warning("beat detection failed (%s) — falling back to fixed grid", e)
+        log.warning("hit detection failed (%s) — falling back to fixed grid", e)
         return _fixed_grid_beats(max_duration, 120.0), 120.0
 
-    if downbeat_only:
-        beats = beats[::4]
+    if not hits or hits[0] > 0.05:
+        hits.insert(0, 0.0)
+    if not hits or hits[-1] < max_duration - 0.05:
+        hits.append(float(max_duration))
 
-    if 0.0 not in beats[:1]:
-        beats.insert(0, 0.0)
-    if not beats or beats[-1] < max_duration - 0.05:
-        beats.append(float(max_duration))
-
-    return beats, tempo_val
+    return hits, tempo_val
 
 
 def _fixed_grid_beats(duration, bpm):
@@ -402,19 +416,22 @@ def _fixed_grid_beats(duration, bpm):
     return out
 
 
-def _segments_from_beats(beat_times, target_duration):
-    """Convert beat times into segment durations, clamping outliers."""
-    raw = [beat_times[i + 1] - beat_times[i] for i in range(len(beat_times) - 1)]
+def _segments_from_hits(hit_times, target_duration, min_cuts=MIN_CUTS_PER_REEL):
+    """Convert hit times into segment durations and force minimum cut density.
+
+    If fewer than min_cuts segments emerge from the audio analysis, the
+    longest segments get split in half repeatedly until min_cuts is met.
+    Net effect: even ballads get 16+ cuts in a 7s reel.
+    """
+    raw = [hit_times[i + 1] - hit_times[i] for i in range(len(hit_times) - 1)]
     cleaned = []
     for s in raw:
         if s < MIN_SEGMENT_SECONDS:
-            # Too tight — merge into previous if any
             if cleaned:
                 cleaned[-1] += s
             else:
                 cleaned.append(s)
         elif s > MAX_SEGMENT_SECONDS:
-            # Split long gap into halves so we still cut
             n_splits = int(s / MAX_SEGMENT_SECONDS) + 1
             piece = s / n_splits
             cleaned.extend([piece] * n_splits)
@@ -422,13 +439,58 @@ def _segments_from_beats(beat_times, target_duration):
             cleaned.append(s)
 
     if not cleaned:
-        return [target_duration]
+        per = target_duration / max(min_cuts, 1)
+        return [per] * min_cuts
+
+    # Force minimum cut count by halving the largest segment until we hit min_cuts
+    safety = 0
+    while len(cleaned) < min_cuts and safety < 200:
+        max_idx = cleaned.index(max(cleaned))
+        biggest = cleaned.pop(max_idx)
+        cleaned.insert(max_idx, biggest / 2.0)
+        cleaned.insert(max_idx, biggest / 2.0)
+        safety += 1
 
     total = sum(cleaned)
     if total <= 0:
-        return [target_duration]
+        per = target_duration / max(min_cuts, 1)
+        return [per] * min_cuts
     scale = target_duration / total
     return [s * scale for s in cleaned]
+
+
+def _select_images_for_cuts(image_paths, n_cuts, seamless_loop=True):
+    """Shuffle pool and pick n_cuts images with no back-to-back repeats.
+
+    If seamless_loop=True, the last image equals the first so the IG
+    auto-replay boundary is invisible.
+    """
+    import random
+    if not image_paths:
+        return []
+    if len(image_paths) == 1:
+        return [image_paths[0]] * n_cuts
+
+    pool_template = list(image_paths)
+    random.shuffle(pool_template)
+    pool = list(pool_template)
+    out = []
+    last = None
+    while len(out) < n_cuts:
+        if not pool:
+            pool = list(pool_template)
+        # Avoid back-to-back: if the next pick equals last, swap in a different one
+        pick = pool.pop()
+        if pick == last and pool:
+            alt = pool.pop()
+            pool.insert(0, pick)
+            pick = alt
+        out.append(pick)
+        last = pick
+
+    if seamless_loop and n_cuts > 1:
+        out[-1] = out[0]
+    return out
 
 
 def compose_slideshow_beat_synced(
@@ -438,46 +500,46 @@ def compose_slideshow_beat_synced(
     audio_path,
     output_path,
     font_path,
-    reel_duration=8.0,
-    transition="fadeblack",
-    transition_duration=0.18,
+    reel_duration=7.0,
+    transition="auto",
+    transition_duration=0.10,
     ken_burns=True,
     seamless_loop=True,
-    downbeat_only=False,
+    min_cuts=MIN_CUTS_PER_REEL,
 ):
-    """Render a slideshow whose cuts land on the song's detected beats.
+    """CapCut-style fast-cut reel: hits-synced cuts, rotating slide/zoom/wipe
+    transitions, punchy zoom on every clip, shuffled images with no repeats.
 
-    Each cut is an xfade transition (fade / fadeblack / circleopen / etc.).
-    With ken_burns=True every slide slowly zooms (alternating in/out) so
-    the reel never feels static — that's the CapCut "movement" feel.
+    Default transition='auto' rotates through TRANSITIONS_PUNCHY so every
+    cut looks different. Set transition='slideleft' (or any single name) to
+    force a specific look.
     """
     if not image_paths:
         raise ValueError("compose_slideshow_beat_synced requires at least one image")
 
-    beats, tempo = detect_beats(audio_path, max_duration=reel_duration, downbeat_only=downbeat_only)
-    segments = _segments_from_beats(beats, reel_duration)
+    hits, tempo = detect_hits(audio_path, max_duration=reel_duration)
+    segments = _segments_from_hits(hits, reel_duration, min_cuts=min_cuts)
     n_segments = len(segments)
 
+    chosen_images = _select_images_for_cuts(image_paths, n_segments, seamless_loop=seamless_loop)
+    unique_count = len(set(chosen_images))
+
     log.info(
-        "beat-synced reel: tempo=%.0f BPM, %d cuts, durations=%s",
-        tempo, n_segments, ["%.2f" % s for s in segments],
+        "capcut reel: tempo=%.0f BPM, %d cuts, %d unique images, transition=%s, durations=%s",
+        tempo, n_segments, unique_count, transition,
+        ["%.2f" % s for s in segments],
     )
 
-    workdir = Path(tempfile.mkdtemp(prefix="reel-beat-"))
+    workdir = Path(tempfile.mkdtemp(prefix="reel-capcut-"))
     try:
-        # Compose one frame per segment, cycling through images
         frame_paths = []
-        for i in range(n_segments):
-            src_image = image_paths[i % len(image_paths)]
-            # Seamless loop: last frame matches first frame so the auto-replay is invisible
-            if seamless_loop and i == n_segments - 1 and n_segments > 1:
-                src_image = image_paths[0]
+        for i, src_image in enumerate(chosen_images):
             out = workdir / ("frame-" + str(i).zfill(4) + ".jpg")
             try:
                 compose_frame(src_image, quote, philosopher, str(out), font_path)
                 frame_paths.append(out)
             except Exception as e:
-                log.warning("frame %d failed (%s) - skipping", i, e)
+                log.warning("frame %d failed (%s) - reusing previous", i, e)
                 if frame_paths:
                     frame_paths.append(frame_paths[-1])
 
@@ -487,14 +549,12 @@ def compose_slideshow_beat_synced(
         D = float(transition_duration)
         cmd = ["ffmpeg", "-y", "-loglevel", "error", "-stats"]
 
-        # One looped image input per segment, length = segment + transition overlap
         for i, fp in enumerate(frame_paths):
             length = segments[i] + D
             cmd += ["-loop", "1", "-t", "%.4f" % length, "-i", str(fp)]
         cmd += ["-i", str(audio_path)]
         audio_idx = len(frame_paths)
 
-        # Build filter graph
         parts = []
         for i in range(len(frame_paths)):
             parts.append(_clip_filter(i, segments[i] + D, ken_burns=ken_burns))
@@ -507,11 +567,10 @@ def compose_slideshow_beat_synced(
             for i in range(1, len(frame_paths)):
                 cumulative += segments[i - 1]
                 offset = max(0.0, cumulative - D)
-                trans = transition
-                # Mix it up: rotate through punchy transitions if user passed "auto"
                 if transition == "auto":
-                    pool = TRANSITIONS_PUNCHY
-                    trans = pool[(i - 1) % len(pool)]
+                    trans = TRANSITIONS_PUNCHY[(i - 1) % len(TRANSITIONS_PUNCHY)]
+                else:
+                    trans = transition
                 last = i == len(frame_paths) - 1
                 out_label = "[vout]" if last else "[x%d]" % i
                 parts.append(
@@ -538,7 +597,7 @@ def compose_slideshow_beat_synced(
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             tail = (result.stderr or "")[-500:]
-            raise RuntimeError("ffmpeg beat-sync failed: " + tail)
+            raise RuntimeError("ffmpeg capcut compose failed: " + tail)
     finally:
         try:
             for f in workdir.iterdir():
@@ -548,20 +607,26 @@ def compose_slideshow_beat_synced(
             pass
 
 
+# Backwards-compat alias for old callers using detect_beats / _segments_from_beats names.
+detect_beats = detect_hits
+_segments_from_beats = _segments_from_hits
+
+
 def _clip_filter(idx, length_sec, ken_burns):
-    """Per-clip filter chain: scale, optional Ken Burns zoom, normalize for xfade.
+    """Per-clip filter chain: scale, punchy zoom, normalize for xfade.
 
     xfade requires every input to share resolution, fps, pixel format, timebase.
+    The zoom is bigger and faster than the old Ken Burns (1.0 -> 1.22 vs 1.0 -> 1.10)
+    so each clip has visible motion even at 0.4s — that's the CapCut punch.
     """
     base = "[%d:v]" % idx
     if ken_burns:
-        # zoompan needs a high-res source so the zoom doesn't pixelate.
-        # Alternate zoom-in vs. zoom-out by clip index for visual rhythm.
         d_frames = max(1, int(length_sec * 30))
+        # Alternate punchy zoom direction per clip for visual rhythm.
         if idx % 2 == 0:
-            z_expr = "min(zoom+0.0010,1.10)"     # slow zoom in
+            z_expr = "min(zoom+0.0030,1.22)"   # punchy zoom in
         else:
-            z_expr = "if(eq(on,0),1.10,max(zoom-0.0010,1.00))"  # zoom out
+            z_expr = "if(eq(on,0),1.22,max(zoom-0.0030,1.00))"  # punchy zoom out
         return (
             base
             + "scale=2160:3840:force_original_aspect_ratio=increase,"
