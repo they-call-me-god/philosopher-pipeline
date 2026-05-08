@@ -90,6 +90,10 @@ jobs:
           curl -fsSL \
             "https://github.com/google/fonts/raw/main/ofl/inter/Inter%5Bopsz%2Cwght%5D.ttf" \
             -o fonts/Inter-Regular.ttf
+          curl -fsSL \
+            "https://github.com/google/fonts/raw/main/ofl/unifrakturmaguntia/UnifrakturMaguntia-Book.ttf" \
+            -o fonts/UnifrakturMaguntia-Book.ttf || \
+            echo "gothic font download failed — composer will fall back to Playfair"
 
       - name: Write YouTube cookies
         run: |

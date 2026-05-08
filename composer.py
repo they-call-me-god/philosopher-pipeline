@@ -338,26 +338,31 @@ def compose_reel(image_path, audio_path, output_path, duration=30):
         raise RuntimeError("ffmpeg failed: " + e.stderr.decode()[-300:])
 
 
-# ─── CapCut-style fast-cut slideshow ─────────────────────────────────────────
-# Force at least 16 cuts in 7s regardless of song tempo. Detect beats AND
-# onset transients (drum hits, vocals) for finer rhythmic granularity, then
-# rotate through hard slide/zoom/wipe transitions (no fades). Each clip gets
-# a punchy zoom (1.0 -> 1.22) so motion never stops. Images shuffled with
-# no back-to-back repeats so the same painting never sits next to itself.
+# ─── CapCut-style hard-cut reel ──────────────────────────────────────────────
+# Hard cuts (no slide/wipe — those read as PowerPoint), in-clip 1.0 -> 1.30
+# zoom punch alternating directions, unified color grade across every clip,
+# and ONE persistent text overlay PNG riding on top of the whole 7s timeline
+# (text is no longer rebaked into every JPG). Images shuffled, no back-to-back
+# repeats. Gothic font for the quote when available, fallback otherwise.
 
-# Punchy transitions only — no fade/fadeblack/fadewhite which wash out cuts.
-# These mimic the rotating transitions in CapCut's viral templates.
-TRANSITIONS_PUNCHY = [
-    "slideleft", "slideright", "slideup", "slidedown",
-    "zoomin", "smoothleft", "smoothright",
-    "wipeleft", "wiperight", "circleopen",
-]
-# Soft pool kept for callers that explicitly want a calm look.
-TRANSITIONS_SOFT = ["fade", "dissolve", "smoothleft", "wiperight"]
+MIN_SEGMENT_SECONDS = 0.20
+MAX_SEGMENT_SECONDS = 0.55
+MIN_CUTS_PER_REEL = 16
 
-MIN_SEGMENT_SECONDS = 0.20   # tighter cuts than this read as noise
-MAX_SEGMENT_SECONDS = 0.55   # any gap longer than this gets split
-MIN_CUTS_PER_REEL = 16       # CapCut feel: 16 cuts in a 7s reel, even on slow songs
+DEFAULT_COLOR_GRADE = "vintage"
+COLOR_GRADES = {
+    # Subtle desaturation + warm shadows + slight contrast bump
+    "vintage": "eq=saturation=0.62:contrast=1.10:gamma=0.95,curves=preset=vintage",
+    # Old-paper sepia tone, strong unification across paintings
+    "sepia": "colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131",
+    # Desaturated B/W high contrast
+    "noir": "eq=saturation=0:contrast=1.20:gamma=0.95",
+    # Cool-blue hazy film
+    "cool": "eq=saturation=0.65:gamma_b=1.08:gamma_r=0.94",
+    # Warm sun-faded film
+    "warm": "eq=saturation=0.72:gamma_r=1.06:gamma_b=0.92",
+    "off": "",
+}
 
 
 def detect_hits(audio_path, max_duration=8.0):
@@ -493,6 +498,137 @@ def _select_images_for_cuts(image_paths, n_cuts, seamless_loop=True):
     return out
 
 
+def _resolve_overlay_font(overlay_font_path, fallback_font_path):
+    """Pick the gothic font if it exists, else the fallback (Playfair)."""
+    if overlay_font_path:
+        try:
+            ImageFont.truetype(str(overlay_font_path), 12)
+            return overlay_font_path
+        except (IOError, OSError):
+            pass
+    return fallback_font_path
+
+
+def _render_quote_overlay(quote, philosopher, output_path, gothic_font_path, watermark_font_path):
+    """Render the persistent transparent 1080x1920 text overlay.
+
+    One PNG drawn once and overlaid onto the whole video timeline — text never
+    rebakes per frame, never jitters across cuts. Smaller fonts than the old
+    per-frame version, gothic typeface for the quote+name, plain font for the
+    watermark.
+    """
+    img = Image.new("RGBA", (REEL_WIDTH, REEL_HEIGHT), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    # Smaller text than baked-frame version — gothic reads heavier per pixel.
+    quote_size_start = 38
+    quote_size_min = 18
+    quote_size_step = 2
+    name_size_ratio = 0.55
+    name_size_min = 16
+    line_spacing = 8
+
+    quote_text = '"' + quote + '"'
+    name_text = "- " + philosopher.upper()
+
+    max_px_width = int(REEL_WIDTH * 0.72)
+    max_px_height = int(REEL_HEIGHT * 0.40)
+
+    quote_size = quote_size_start
+    quote_font = _load_font(gothic_font_path, quote_size)
+    wrapped = _wrap_text(quote_text, quote_font, draw, max_px_width)
+    while quote_size > quote_size_min:
+        quote_font = _load_font(gothic_font_path, quote_size)
+        wrapped = _wrap_text(quote_text, quote_font, draw, max_px_width)
+        bbox = draw.multiline_textbbox((0, 0), wrapped, font=quote_font, spacing=line_spacing)
+        if (bbox[2] - bbox[0]) <= max_px_width and (bbox[3] - bbox[1]) <= max_px_height:
+            break
+        quote_size -= quote_size_step
+    else:
+        quote_font = _load_font(gothic_font_path, quote_size_min)
+        wrapped = _wrap_text(quote_text, quote_font, draw, max_px_width)
+        wrapped = _truncate_text(wrapped, quote_font, draw, max_px_width)
+
+    quote_bbox = draw.multiline_textbbox((0, 0), wrapped, font=quote_font, spacing=line_spacing)
+    quote_w = quote_bbox[2] - quote_bbox[0]
+    quote_h = quote_bbox[3] - quote_bbox[1]
+
+    name_size = max(name_size_min, int(quote_size * name_size_ratio))
+    name_font = _load_font(gothic_font_path, name_size)
+    name_bbox = draw.textbbox((0, 0), name_text, font=name_font)
+    name_w = name_bbox[2] - name_bbox[0]
+    name_h = name_bbox[3] - name_bbox[1]
+
+    gap = max(12, int(quote_size * 0.40))
+    total_h = quote_h + gap + name_h
+    cx = REEL_WIDTH // 2
+    cy = REEL_HEIGHT // 2
+    quote_top = cy - total_h // 2
+    name_top = quote_top + quote_h + gap
+
+    # Slim band behind text for legibility against any image
+    band_pad_x = 36
+    band_pad_y = 24
+    band_left = max(0, cx - max(quote_w, name_w) // 2 - band_pad_x)
+    band_right = min(REEL_WIDTH, cx + max(quote_w, name_w) // 2 + band_pad_x)
+    band_top = max(0, quote_top - band_pad_y)
+    band_bot = min(REEL_HEIGHT, name_top + name_h + band_pad_y)
+    draw.rectangle((band_left, band_top, band_right, band_bot), fill=(0, 0, 0, 110))
+
+    # Quote (gothic) — soft drop shadow + white
+    draw.multiline_text(
+        (cx + 1, quote_top + 1), wrapped, font=quote_font, fill=(0, 0, 0, 200),
+        align="center", anchor="ma", spacing=line_spacing,
+    )
+    draw.multiline_text(
+        (cx, quote_top), wrapped, font=quote_font, fill=(255, 255, 255, 255),
+        align="center", anchor="ma", spacing=line_spacing,
+    )
+
+    # Attribution (same gothic, smaller, dimmer)
+    draw.text((cx + 1, name_top + 1), name_text, font=name_font, fill=(0, 0, 0, 200), anchor="ma")
+    draw.text((cx, name_top), name_text, font=name_font, fill=(220, 220, 220, 240), anchor="ma")
+
+    # Watermark — plain font (gothic blackletter is unreadable at small sizes)
+    wm = "@deepahhthinking"
+    wm_size = 22
+    wm_font = _load_font(watermark_font_path, wm_size)
+    wbbox = draw.textbbox((0, 0), wm, font=wm_font)
+    wx = (REEL_WIDTH - (wbbox[2] - wbbox[0])) // 2
+    wy = REEL_HEIGHT - (wbbox[3] - wbbox[1]) - 80
+    draw.text((wx + 1, wy + 1), wm, font=wm_font, fill=(0, 0, 0, 130))
+    draw.text((wx, wy), wm, font=wm_font, fill=(255, 255, 255, 130))
+
+    img.save(output_path, "PNG")
+
+
+def _capcut_clip_filter(idx, length_sec, color_grade_filter):
+    """Per-clip ffmpeg filter chain: scale, alternating zoom punch, color grade.
+
+    Hard-cut compatible: outputs all clips at identical 1080x1920 30fps
+    yuv420p so the concat filter accepts them. The zoom (1.0 -> 1.30) is
+    bigger than v2 so motion is visible inside even a 0.35s clip.
+    """
+    d_frames = max(1, int(length_sec * 30))
+    if idx % 2 == 0:
+        z_expr = "min(zoom+0.0040,1.30)"
+    else:
+        z_expr = "if(eq(on,0),1.30,max(zoom-0.0040,1.00))"
+
+    chain = [
+        "scale=2160:3840:force_original_aspect_ratio=increase",
+        "crop=2160:3840",
+        ("zoompan=z='" + z_expr + "'"
+         + ":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+         + ":d=" + str(d_frames) + ":s=1080x1920:fps=30"),
+    ]
+    if color_grade_filter:
+        chain.append(color_grade_filter)
+    chain.append("setsar=1")
+    chain.append("format=yuv420p")
+    return "[" + str(idx) + ":v]" + ",".join(chain) + "[v" + str(idx) + "]"
+
+
 def compose_slideshow_beat_synced(
     image_paths,
     quote,
@@ -501,18 +637,18 @@ def compose_slideshow_beat_synced(
     output_path,
     font_path,
     reel_duration=7.0,
-    transition="auto",
-    transition_duration=0.10,
-    ken_burns=True,
-    seamless_loop=True,
     min_cuts=MIN_CUTS_PER_REEL,
+    seamless_loop=True,
+    color_grade=DEFAULT_COLOR_GRADE,
+    overlay_font_path=None,
 ):
-    """CapCut-style fast-cut reel: hits-synced cuts, rotating slide/zoom/wipe
-    transitions, punchy zoom on every clip, shuffled images with no repeats.
+    """CapCut-style hard-cut reel.
 
-    Default transition='auto' rotates through TRANSITIONS_PUNCHY so every
-    cut looks different. Set transition='slideleft' (or any single name) to
-    force a specific look.
+    - Cuts on detected beats+onsets, force min_cuts segments in the window
+    - Each clip: 1.0 -> 1.30 alternating zoom punch + unified color grade
+    - HARD CUTS via concat filter (no slide/wipe — those read as PowerPoint)
+    - ONE persistent text overlay PNG sits on top of the entire timeline
+    - Gothic overlay font (UnifrakturMaguntia) when available, else Playfair
     """
     if not image_paths:
         raise ValueError("compose_slideshow_beat_synced requires at least one image")
@@ -524,65 +660,40 @@ def compose_slideshow_beat_synced(
     chosen_images = _select_images_for_cuts(image_paths, n_segments, seamless_loop=seamless_loop)
     unique_count = len(set(chosen_images))
 
+    grade_filter = COLOR_GRADES.get(color_grade, COLOR_GRADES[DEFAULT_COLOR_GRADE])
+    overlay_font = _resolve_overlay_font(overlay_font_path, font_path)
+
     log.info(
-        "capcut reel: tempo=%.0f BPM, %d cuts, %d unique images, transition=%s, durations=%s",
-        tempo, n_segments, unique_count, transition,
+        "capcut reel v3: tempo=%.0f BPM, %d hard cuts, %d unique images, grade=%s, gothic=%s, durations=%s",
+        tempo, n_segments, unique_count, color_grade,
+        bool(overlay_font_path) and str(overlay_font) == str(overlay_font_path),
         ["%.2f" % s for s in segments],
     )
 
-    workdir = Path(tempfile.mkdtemp(prefix="reel-capcut-"))
+    workdir = Path(tempfile.mkdtemp(prefix="reel-cc3-"))
     try:
-        frame_paths = []
-        for i, src_image in enumerate(chosen_images):
-            out = workdir / ("frame-" + str(i).zfill(4) + ".jpg")
-            try:
-                compose_frame(src_image, quote, philosopher, str(out), font_path)
-                frame_paths.append(out)
-            except Exception as e:
-                log.warning("frame %d failed (%s) - reusing previous", i, e)
-                if frame_paths:
-                    frame_paths.append(frame_paths[-1])
+        # 1. Pre-render the persistent text overlay (gothic font, smaller text, watermark)
+        overlay_png = workdir / "quote_overlay.png"
+        _render_quote_overlay(quote, philosopher, str(overlay_png), overlay_font, font_path)
 
-        if not frame_paths:
-            raise RuntimeError("No frames composed - all images failed")
-
-        D = float(transition_duration)
+        # 2. ffmpeg: per-clip scale+zoom+grade, concat them, overlay text, mux audio
         cmd = ["ffmpeg", "-y", "-loglevel", "error", "-stats"]
-
-        for i, fp in enumerate(frame_paths):
-            length = segments[i] + D
-            cmd += ["-loop", "1", "-t", "%.4f" % length, "-i", str(fp)]
+        for i, src in enumerate(chosen_images):
+            cmd += ["-loop", "1", "-t", "%.4f" % segments[i], "-i", str(src)]
+        cmd += ["-i", str(overlay_png)]
+        overlay_idx = len(chosen_images)
         cmd += ["-i", str(audio_path)]
-        audio_idx = len(frame_paths)
+        audio_idx = len(chosen_images) + 1
 
         parts = []
-        for i in range(len(frame_paths)):
-            parts.append(_clip_filter(i, segments[i] + D, ken_burns=ken_burns))
-
-        if len(frame_paths) == 1:
-            parts.append("[v0]copy[vout]")
-        else:
-            cumulative = 0.0
-            prev_label = "[v0]"
-            for i in range(1, len(frame_paths)):
-                cumulative += segments[i - 1]
-                offset = max(0.0, cumulative - D)
-                if transition == "auto":
-                    trans = TRANSITIONS_PUNCHY[(i - 1) % len(TRANSITIONS_PUNCHY)]
-                else:
-                    trans = transition
-                last = i == len(frame_paths) - 1
-                out_label = "[vout]" if last else "[x%d]" % i
-                parts.append(
-                    "%s[v%d]xfade=transition=%s:duration=%.4f:offset=%.4f%s"
-                    % (prev_label, i, trans, D, offset, out_label)
-                )
-                prev_label = out_label
-
-        filter_complex = ";".join(parts)
+        for i in range(len(chosen_images)):
+            parts.append(_capcut_clip_filter(i, segments[i], grade_filter))
+        chain_inputs = "".join("[v%d]" % i for i in range(len(chosen_images)))
+        parts.append(chain_inputs + "concat=n=" + str(len(chosen_images)) + ":v=1:a=0[vraw]")
+        parts.append("[vraw][" + str(overlay_idx) + ":v]overlay=0:0:format=auto[vout]")
 
         cmd += [
-            "-filter_complex", filter_complex,
+            "-filter_complex", ";".join(parts),
             "-map", "[vout]",
             "-map", "%d:a" % audio_idx,
             "-c:v", "libx264", "-crf", "23", "-pix_fmt", "yuv420p",
@@ -596,7 +707,7 @@ def compose_slideshow_beat_synced(
 
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            tail = (result.stderr or "")[-500:]
+            tail = (result.stderr or "")[-700:]
             raise RuntimeError("ffmpeg capcut compose failed: " + tail)
     finally:
         try:
@@ -607,37 +718,6 @@ def compose_slideshow_beat_synced(
             pass
 
 
-# Backwards-compat alias for old callers using detect_beats / _segments_from_beats names.
+# Back-compat aliases so older callers (and earlier function names) still work.
 detect_beats = detect_hits
 _segments_from_beats = _segments_from_hits
-
-
-def _clip_filter(idx, length_sec, ken_burns):
-    """Per-clip filter chain: scale, punchy zoom, normalize for xfade.
-
-    xfade requires every input to share resolution, fps, pixel format, timebase.
-    The zoom is bigger and faster than the old Ken Burns (1.0 -> 1.22 vs 1.0 -> 1.10)
-    so each clip has visible motion even at 0.4s — that's the CapCut punch.
-    """
-    base = "[%d:v]" % idx
-    if ken_burns:
-        d_frames = max(1, int(length_sec * 30))
-        # Alternate punchy zoom direction per clip for visual rhythm.
-        if idx % 2 == 0:
-            z_expr = "min(zoom+0.0030,1.22)"   # punchy zoom in
-        else:
-            z_expr = "if(eq(on,0),1.22,max(zoom-0.0030,1.00))"  # punchy zoom out
-        return (
-            base
-            + "scale=2160:3840:force_original_aspect_ratio=increase,"
-            + "crop=2160:3840,"
-            + "zoompan=z='" + z_expr + "':"
-            + "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-            + "d=" + str(d_frames) + ":s=1080x1920:fps=30,"
-            + "setsar=1,format=yuv420p[v" + str(idx) + "]"
-        )
-    return (
-        base
-        + "scale=1080:1920:force_original_aspect_ratio=increase,"
-        + "crop=1080:1920,setsar=1,fps=30,format=yuv420p[v" + str(idx) + "]"
-    )

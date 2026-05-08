@@ -59,6 +59,7 @@ CACHE_PHOTOS = BASE_DIR / "cache" / "photos"
 CACHE_PAINTINGS = BASE_DIR / "cache" / "paintings"
 CACHE_AUDIO = BASE_DIR / "cache" / "audio"
 FONT_PATH = BASE_DIR / "fonts" / "PlayfairDisplay-Regular.ttf"
+GOTHIC_FONT_PATH = BASE_DIR / "fonts" / "UnifrakturMaguntia-Book.ttf"
 
 # Slideshow mix: 12 paintings + 8 portraits = 20 unique images.
 # Beat-synced reels typically produce 18–25 cuts at 7s, so 20 unique
@@ -72,12 +73,10 @@ def _env_bool(name, default=True):
 
 
 USE_BEAT_SYNC = _env_bool("USE_BEAT_SYNC", default=True)
-# 'auto' rotates through punchy slide/zoom/wipe transitions every cut (CapCut feel).
-# Set to a single name like 'slideleft' or 'zoomin' to lock one transition.
-BEAT_TRANSITION = os.getenv("BEAT_TRANSITION", "auto").strip()
-BEAT_TRANSITION_DURATION = float(os.getenv("BEAT_TRANSITION_DURATION", "0.10"))
 MIN_CUTS = int(os.getenv("MIN_CUTS", "16"))
-KEN_BURNS = _env_bool("KEN_BURNS", default=True)
+# Color grade applied uniformly across every clip so disparate paintings
+# read as one cohesive reel: vintage | sepia | noir | cool | warm | off.
+COLOR_GRADE = os.getenv("COLOR_GRADE", "vintage").strip()
 REEL_DURATION = 7.0
 
 # Hooks rotate by post_count so the same opening line never repeats per
@@ -159,10 +158,11 @@ def main(upload_now=True, single=False, generate_only=False):
 
     log.info("Run ID: %s", RUN_ID)
     log.info(
-        "Mode: %s | transition=%s | ken_burns=%s",
+        "Mode: %s | grade=%s | min_cuts=%d | gothic_font=%s",
         "beat-synced" if USE_BEAT_SYNC else "uniform-cut",
-        BEAT_TRANSITION if USE_BEAT_SYNC else "n/a",
-        KEN_BURNS if USE_BEAT_SYNC else "n/a",
+        COLOR_GRADE if USE_BEAT_SYNC else "n/a",
+        MIN_CUTS if USE_BEAT_SYNC else 0,
+        GOTHIC_FONT_PATH.exists(),
     )
     log.info("Processing %d philosophers...", len(philosophers))
 
@@ -244,11 +244,10 @@ def main(upload_now=True, single=False, generate_only=False):
                     frames, quote, philosopher,
                     audio_path, mp4_path, str(FONT_PATH),
                     reel_duration=REEL_DURATION,
-                    transition=BEAT_TRANSITION,
-                    transition_duration=BEAT_TRANSITION_DURATION,
-                    ken_burns=KEN_BURNS,
-                    seamless_loop=True,
                     min_cuts=MIN_CUTS,
+                    seamless_loop=True,
+                    color_grade=COLOR_GRADE,
+                    overlay_font_path=str(GOTHIC_FONT_PATH) if GOTHIC_FONT_PATH.exists() else None,
                 )
             else:
                 compose_slideshow(
