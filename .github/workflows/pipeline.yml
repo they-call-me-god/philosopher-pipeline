@@ -70,6 +70,13 @@ jobs:
           key: photo-${{ runner.os }}
           restore-keys: photo-${{ runner.os }}-
 
+      - name: Restore paintings cache
+        uses: actions/cache@v4
+        with:
+          path: cache/paintings
+          key: paintings-${{ runner.os }}
+          restore-keys: paintings-${{ runner.os }}-
+
       - name: Restore Instagram session
         run: |
           if [ -n "${{ secrets.INSTAGRAM_SESSION }}" ]; then

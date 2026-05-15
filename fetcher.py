@@ -24,7 +24,42 @@ def _is_cloud_only(path: Path) -> bool:
 log = logging.getLogger(__name__)
 
 WIKIMEDIA_API = "https://commons.wikimedia.org/w/api.php"
-HEADERS = {"User-Agent": "PhilosopherPipeline/1.0 (instagram-content-bot; python-requests)"}
+# Wikimedia asks for a contact URL in the User-Agent for high-volume scripted access.
+HEADERS = {
+    "User-Agent": (
+        "PhilosopherPipeline/1.1 "
+        "(+https://github.com/they-call-me-god/philosopher-pipeline; "
+        "instagram-content-bot)"
+    ),
+    "Accept-Encoding": "gzip",
+}
+
+# The Met Open Access: free, no auth, ~470k artworks. primaryImage is a
+# direct images.metmuseum.org CDN URL with no Cloudflare bot challenge.
+# Different host from Wikimedia so it gives the pipeline a second independent
+# source when commons.wikimedia.org rate-limits us.
+MET_SEARCH_API = "https://collectionapi.metmuseum.org/public/collection/v1/search"
+MET_OBJECT_API = "https://collectionapi.metmuseum.org/public/collection/v1/objects"
+MET_QUERIES = [
+    "renaissance",
+    "baroque",
+    "italian renaissance",
+    "dutch golden age",
+    "rembrandt",
+    "caravaggio",
+    "raphael",
+    "titian",
+    "religious painting",
+    "portrait",
+]
+
+# Throttle: Wikimedia documents ~10 req/s as a hard ceiling for unauthenticated
+# scripts; we stay well under it. 429 retries honor Retry-After.
+WIKIMEDIA_THUMB_WIDTH = 1200
+WIKIMEDIA_SEARCH_SLEEP = 1.0
+WIKIMEDIA_INFO_SLEEP = 0.5
+DOWNLOAD_SLEEP = 0.25
+MAX_RETRIES_429 = 3
 
 PHILOSOPHER_QUOTES = {
     "albert camus": [
@@ -234,35 +269,71 @@ def fetch_photo(philosopher, used_photos, cache_dir):
     return portraits[0] if portraits else None
 
 
+def _polite_get(url, params=None, timeout=30, pre_sleep=0.0):
+    """GET with Retry-After-aware backoff for HTTP 429.
+
+    Returns a Response on success or raises the last exception. Honors
+    the server-advertised Retry-After header up to a 30s ceiling so we
+    do not stall the whole pipeline on a hostile cache.
+    """
+    if pre_sleep:
+        time.sleep(pre_sleep)
+    last_exc = None
+    for attempt in range(MAX_RETRIES_429):
+        resp = requests.get(url, params=params, timeout=timeout, headers=HEADERS)
+        if resp.status_code != 429:
+            resp.raise_for_status()
+            return resp
+        retry_after = resp.headers.get("Retry-After")
+        try:
+            wait = float(retry_after) if retry_after else 2.0 * (attempt + 1)
+        except ValueError:
+            wait = 2.0 * (attempt + 1)
+        wait = min(wait, 30.0)
+        log.info("HTTP 429 on %s; sleeping %.1fs (attempt %d/%d)",
+                 url, wait, attempt + 1, MAX_RETRIES_429)
+        time.sleep(wait)
+        last_exc = requests.HTTPError("429 after retries", response=resp)
+    if last_exc:
+        raise last_exc
+    return resp
+
+
 def _wikimedia_search(query, srlimit=40):
     params = {
         "action": "query", "list": "search", "format": "json",
         "srnamespace": "6", "srsearch": query, "srlimit": str(srlimit),
     }
-    time.sleep(0.6)
-    resp = requests.get(WIKIMEDIA_API, params=params, timeout=30, headers=HEADERS)
-    resp.raise_for_status()
+    resp = _polite_get(WIKIMEDIA_API, params=params, pre_sleep=WIKIMEDIA_SEARCH_SLEEP)
     return resp.json().get("query", {}).get("search", [])
 
 
 def _wikimedia_imageinfo(title):
+    """Imageinfo with iiurlwidth so we get a thumbnail CDN URL.
+
+    The thumbnail CDN (upload.wikimedia.org/.../thumb/...) is served by a
+    different cache tier from the originals and is far more tolerant of
+    scripted access. Wikimedia's own 429 message recommends this path.
+    """
     params = {
         "action": "query", "titles": title, "prop": "imageinfo",
-        "iiprop": "url|size", "format": "json",
+        "iiprop": "url|size", "iiurlwidth": str(WIKIMEDIA_THUMB_WIDTH),
+        "format": "json",
     }
-    time.sleep(0.3)
-    resp = requests.get(WIKIMEDIA_API, params=params, timeout=30, headers=HEADERS)
-    resp.raise_for_status()
+    resp = _polite_get(WIKIMEDIA_API, params=params, pre_sleep=WIKIMEDIA_INFO_SLEEP)
     return resp.json().get("query", {}).get("pages", {})
+
+
+def _pick_image_url(info):
+    """Prefer thumburl when available, fall back to original url."""
+    return info.get("thumburl") or info.get("url")
 
 
 def _download_to_cache(url, cached_path):
     if cached_path.exists() and cached_path.stat().st_size > 0:
         return True
     try:
-        time.sleep(0.3)
-        img_resp = requests.get(url, timeout=60, headers=HEADERS)
-        img_resp.raise_for_status()
+        img_resp = _polite_get(url, timeout=60, pre_sleep=DOWNLOAD_SLEEP)
         cached_path.write_bytes(img_resp.content)
         return cached_path.stat().st_size > 0
     except Exception as e:
@@ -316,18 +387,23 @@ def fetch_portraits(philosopher, count, used_portraits, cache_dir):
                 if not infos:
                     continue
                 info = infos[0]
-                url = info["url"]
                 w, h = info.get("width", 0), info.get("height", 0)
                 if w < 400 or h < 400:
                     continue
+                dl_url = _pick_image_url(info)
+                if not dl_url:
+                    continue
 
-                url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+                # Hash the canonical original URL so the same image keeps the
+                # same filename whether we downloaded thumb or full-res.
+                key_url = info.get("url") or dl_url
+                url_hash = hashlib.md5(key_url.encode()).hexdigest()[:10]
                 filename = "portrait-" + slug + "-" + url_hash + ".jpg"
                 if filename in used_set:
                     continue
 
                 cached = cache_dir / filename
-                if not _download_to_cache(url, cached):
+                if not _download_to_cache(dl_url, cached):
                     continue
                 if _is_cloud_only(cached):
                     continue
@@ -351,19 +427,68 @@ def fetch_portraits(philosopher, count, used_portraits, cache_dir):
     return collected[:count]
 
 
-def fetch_paintings(count, used_paintings, cache_dir):
-    """Fetch up to `count` Renaissance/Baroque paintings.
+def _fetch_paintings_met(count, used_set, seen_urls, cache_dir):
+    """Pull paintings from The Met Open Access (free, no auth).
 
-    Lowered min size to 600x600 (was 800) to capture more of the catalog,
-    and shuffles a wider category list. Hard fallback to local cache last.
+    Met serves images from images.metmuseum.org with no Cloudflare bot
+    challenge, so headless scripts can download directly. Used as the
+    primary source so the pipeline does not depend on Wikimedia.
     """
-    cache_dir = Path(cache_dir)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    used_set = set(used_paintings)
     collected = []
-    seen_urls = set()
+    queries = list(MET_QUERIES)
+    random.shuffle(queries)
+    for query in queries:
+        if len(collected) >= count:
+            break
+        try:
+            params = {"q": query, "hasImages": "true", "medium": "Paintings"}
+            resp = _polite_get(MET_SEARCH_API, params=params, pre_sleep=0.4)
+            object_ids = resp.json().get("objectIDs") or []
+        except Exception as e:
+            log.warning("Met search %r failed: %s", query, e)
+            continue
 
+        random.shuffle(object_ids)
+        for object_id in object_ids[:60]:
+            if len(collected) >= count:
+                break
+            try:
+                obj_resp = _polite_get(
+                    "%s/%s" % (MET_OBJECT_API, object_id), pre_sleep=0.2
+                )
+                obj = obj_resp.json()
+            except Exception as e:
+                log.warning("Met object %s failed: %s", object_id, e)
+                continue
+            if not obj.get("isPublicDomain"):
+                continue
+            url = obj.get("primaryImage") or ""
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+
+            url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+            filename = "met-" + url_hash + ".jpg"
+            if filename in used_set:
+                continue
+
+            cached = cache_dir / filename
+            if not _download_to_cache(url, cached):
+                continue
+            if _is_cloud_only(cached):
+                continue
+            collected.append(str(cached))
+    log.info("Met paintings: %d/%d", len(collected), count)
+    return collected
+
+
+def _fetch_paintings_wikimedia(count, used_set, seen_urls, cache_dir):
+    """Pull Renaissance/Baroque paintings from Wikimedia Commons categories.
+
+    Used as a top-up when AIC has not produced enough images for the reel.
+    Always uses the thumbnail CDN via _wikimedia_imageinfo.
+    """
+    collected = []
     categories = list(RENAISSANCE_CATEGORIES)
     random.shuffle(categories)
 
@@ -376,9 +501,7 @@ def fetch_paintings(count, used_paintings, cache_dir):
                 "cmtype": "file", "cmtitle": "Category:" + category,
                 "cmlimit": "200",
             }
-            time.sleep(0.8)
-            resp = requests.get(WIKIMEDIA_API, params=params, timeout=30, headers=HEADERS)
-            resp.raise_for_status()
+            resp = _polite_get(WIKIMEDIA_API, params=params, pre_sleep=WIKIMEDIA_SEARCH_SLEEP)
             members = resp.json().get("query", {}).get("categorymembers", [])
             random.shuffle(members)
         except Exception as e:
@@ -402,29 +525,60 @@ def fetch_paintings(count, used_paintings, cache_dir):
                 if not infos:
                     continue
                 info = infos[0]
-                url = info["url"]
                 w, h = info.get("width", 0), info.get("height", 0)
                 if w < 600 or h < 600:
                     continue
-                if url in seen_urls:
+                dl_url = _pick_image_url(info)
+                key_url = info.get("url") or dl_url
+                if not dl_url or key_url in seen_urls:
                     continue
-                seen_urls.add(url)
+                seen_urls.add(key_url)
 
-                url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+                url_hash = hashlib.md5(key_url.encode()).hexdigest()[:10]
                 filename = "renaissance-" + url_hash + ".jpg"
                 if filename in used_set:
                     continue
 
                 cached = cache_dir / filename
-                if not _download_to_cache(url, cached):
+                if not _download_to_cache(dl_url, cached):
                     continue
                 if _is_cloud_only(cached):
                     continue
                 collected.append(str(cached))
+    return collected
+
+
+def fetch_paintings(count, used_paintings, cache_dir):
+    """Fetch up to `count` Renaissance/Baroque paintings.
+
+    Source order: Art Institute of Chicago (no rate limit) -> Wikimedia
+    Commons (thumb CDN) -> local cache. The two-source strategy keeps the
+    reel populated when one host is throttling.
+    """
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    used_set = set(used_paintings)
+    seen_urls = set()
+    collected = []
+
+    met = _fetch_paintings_met(count, used_set, seen_urls, cache_dir)
+    collected.extend(met)
+
+    if len(collected) < count:
+        remaining = count - len(collected)
+        wm = _fetch_paintings_wikimedia(remaining, used_set, seen_urls, cache_dir)
+        collected.extend(wm)
 
     # Fallback: any cached painting still on disk
     if len(collected) < count:
-        for p in sorted(cache_dir.glob("renaissance-*.jpg")):
+        existing = (
+            list(cache_dir.glob("renaissance-*.jpg"))
+            + list(cache_dir.glob("met-*.jpg"))
+            + list(cache_dir.glob("aic-*.jpg"))  # legacy filename, preserved for old caches
+        )
+        random.shuffle(existing)
+        for p in existing:
             sp = str(p)
             if sp in collected:
                 continue
@@ -433,5 +587,6 @@ def fetch_paintings(count, used_paintings, cache_dir):
                 if len(collected) >= count:
                     break
 
-    log.info("Paintings: %d/%d", len(collected), count)
+    log.info("Paintings: %d/%d (met=%d wikimedia+cache=%d)",
+             len(collected), count, len(met), len(collected) - len(met))
     return collected[:count]

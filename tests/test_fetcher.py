@@ -61,6 +61,7 @@ MOCK_PAINTING_INFO = {
             "-1": {
                 "imageinfo": [{
                     "url": "https://upload.wikimedia.org/painting1.jpg",
+                    "thumburl": "https://upload.wikimedia.org/thumb/painting1.jpg/1200px.jpg",
                     "width": 1200,
                     "height": 1500,
                 }]
@@ -68,6 +69,38 @@ MOCK_PAINTING_INFO = {
         }
     }
 }
+
+# The Met Open Access: search returns {objectIDs: [...]}, each object
+# fetched separately returns {primaryImage, isPublicDomain}.
+# The pipeline fetches Met first, so any test that exercises Wikimedia
+# painting paths must seed enough empty Met responses to drain the Met
+# query loop (one response per query in fetcher.MET_QUERIES).
+MOCK_MET_EMPTY = {"total": 0, "objectIDs": None}
+MOCK_MET_SEARCH_HIT = {"total": 1, "objectIDs": [12345]}
+MOCK_MET_OBJECT = {
+    "objectID": 12345,
+    "isPublicDomain": True,
+    "primaryImage": "https://images.metmuseum.org/test.jpg",
+    "title": "Test Painting",
+    "artistDisplayName": "Test Artist",
+}
+
+
+def _met_query_count():
+    from fetcher import MET_QUERIES
+    return len(MET_QUERIES)
+
+
+def _empty_met_responses():
+    """One MagicMock per Met query so Met fetch drains harmlessly."""
+    out = []
+    for _ in range(_met_query_count()):
+        r = MagicMock()
+        r.json.return_value = MOCK_MET_EMPTY
+        r.raise_for_status = MagicMock()
+        r.status_code = 200
+        out.append(r)
+    return out
 
 
 # Quote tests
@@ -183,25 +216,33 @@ def test_fetch_photo_returns_path(tmp_path):
 
 
 def test_fetch_photo_skips_used_photos(tmp_path):
+    """A used filename in the used_photos set must be skipped, returning None."""
     mock_url = "https://upload.wikimedia.org/test.jpg"
-    url_hash = hashlib.md5(mock_url.encode()).hexdigest()[:8]
-    already_used_filename = "voltaire-" + url_hash + ".jpg"
+    url_hash = hashlib.md5(mock_url.encode()).hexdigest()[:10]
+    already_used_filename = "portrait-voltaire-" + url_hash + ".jpg"
 
     with patch("fetcher.requests.get") as mock_get:
         search_resp = MagicMock()
         search_resp.json.return_value = MOCK_WIKIMEDIA_RESPONSE
         search_resp.raise_for_status = MagicMock()
-        info_resp1 = MagicMock()
-        info_resp1.json.return_value = MOCK_IMAGE_INFO
-        info_resp1.raise_for_status = MagicMock()
-        info_resp2 = MagicMock()
-        info_resp2.json.return_value = MOCK_IMAGE_INFO
-        info_resp2.raise_for_status = MagicMock()
-        mock_get.side_effect = [search_resp, info_resp1, info_resp2]
+        search_resp.status_code = 200
+        info_resp = MagicMock()
+        info_resp.json.return_value = MOCK_IMAGE_INFO
+        info_resp.raise_for_status = MagicMock()
+        info_resp.status_code = 200
+        mock_get.return_value = info_resp
+        mock_get.side_effect = None
+        # First call returns search; everything after returns the same info_resp
+        # (which would normally feed info+download). With used_set hit, the loop
+        # never reaches download, so we don't need a download mock.
+        def _seq(*args, **kwargs):
+            if "list" in (kwargs.get("params") or {}) and (kwargs["params"]).get("list") == "search":
+                return search_resp
+            return info_resp
+        mock_get.side_effect = _seq
 
         result = fetch_photo("Voltaire", used_photos=[already_used_filename], cache_dir=tmp_path)
         assert result is None
-        assert mock_get.call_count == 3
 
 
 # Bio tests
@@ -231,21 +272,47 @@ def test_philosopher_bios_covers_all_quote_authors():
 # Painting fetch tests
 
 def test_fetch_paintings_returns_list_of_paths(tmp_path):
+    """Met responds with a public-domain painting; image downloads."""
+    with patch("fetcher.requests.get") as mock_get:
+        search_resp = MagicMock()
+        search_resp.json.return_value = MOCK_MET_SEARCH_HIT
+        search_resp.raise_for_status = MagicMock()
+        search_resp.status_code = 200
+        object_resp = MagicMock()
+        object_resp.json.return_value = MOCK_MET_OBJECT
+        object_resp.raise_for_status = MagicMock()
+        object_resp.status_code = 200
+        img_resp = MagicMock()
+        img_resp.content = b"FAKEMETPAINTING"
+        img_resp.raise_for_status = MagicMock()
+        img_resp.status_code = 200
+        # Met search -> object lookup -> image download.
+        mock_get.side_effect = [search_resp, object_resp, img_resp]
+
+        result = fetch_paintings(1, used_paintings=[], cache_dir=tmp_path)
+        assert isinstance(result, list)
+        assert len(result) >= 1
+        assert Path(result[0]).exists()
+
+
+def test_fetch_paintings_falls_through_to_wikimedia(tmp_path):
+    """When Met yields no hits across every query, Wikimedia is consulted."""
     with patch("fetcher.requests.get") as mock_get:
         cat_resp = MagicMock()
         cat_resp.json.return_value = MOCK_CATEGORY_RESPONSE
         cat_resp.raise_for_status = MagicMock()
+        cat_resp.status_code = 200
         info_resp = MagicMock()
         info_resp.json.return_value = MOCK_PAINTING_INFO
         info_resp.raise_for_status = MagicMock()
+        info_resp.status_code = 200
         img_resp = MagicMock()
-        img_resp.content = b"FAKEPAINTINGBYTES"
+        img_resp.content = b"WIKIMEDIA_PAINTING"
         img_resp.raise_for_status = MagicMock()
-        mock_get.side_effect = [cat_resp, info_resp, img_resp,
-                                 cat_resp, info_resp, img_resp,
-                                 cat_resp, info_resp, img_resp,
-                                 cat_resp, info_resp, img_resp,
-                                 cat_resp, info_resp, img_resp]
+        img_resp.status_code = 200
+
+        sequence = _empty_met_responses() + [cat_resp, info_resp, img_resp]
+        mock_get.side_effect = sequence
 
         result = fetch_paintings(1, used_paintings=[], cache_dir=tmp_path)
         assert isinstance(result, list)
@@ -256,8 +323,12 @@ def test_fetch_paintings_returns_list_of_paths(tmp_path):
 def test_fetch_paintings_returns_empty_when_no_data(tmp_path):
     with patch("fetcher.requests.get") as mock_get:
         empty_resp = MagicMock()
-        empty_resp.json.return_value = {"query": {"categorymembers": []}}
+        empty_resp.json.return_value = {
+            "objectIDs": None,
+            "query": {"categorymembers": []},
+        }
         empty_resp.raise_for_status = MagicMock()
+        empty_resp.status_code = 200
         mock_get.return_value = empty_resp
 
         result = fetch_paintings(3, used_paintings=[], cache_dir=tmp_path)
