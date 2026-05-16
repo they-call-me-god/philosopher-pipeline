@@ -602,16 +602,18 @@ def _render_quote_overlay(quote, philosopher, output_path, gothic_font_path, wat
     img.save(output_path, "PNG")
 
 
-_PAN_MODES = [
-    # (x_expr, y_expr) for zoompan. Each is "center +/- offset" of the
-    # original frame, so the visible window slides while it zooms.
-    ("iw/2-(iw/zoom/2)",                       "ih/2-(ih/zoom/2)"),       # 0 center
-    ("iw/2-(iw/zoom/2)+(iw-iw/zoom)/2*on/d",   "ih/2-(ih/zoom/2)"),       # 1 pan right
-    ("iw/2-(iw/zoom/2)-(iw-iw/zoom)/2*on/d",   "ih/2-(ih/zoom/2)"),       # 2 pan left
-    ("iw/2-(iw/zoom/2)",                       "ih/2-(ih/zoom/2)+(ih-ih/zoom)/2*on/d"),  # 3 pan down
-    ("iw/2-(iw/zoom/2)",                       "ih/2-(ih/zoom/2)-(ih-ih/zoom)/2*on/d"),  # 4 pan up
-    ("iw/2-(iw/zoom/2)+(iw-iw/zoom)/3*on/d",   "ih/2-(ih/zoom/2)-(ih-ih/zoom)/3*on/d"),  # 5 diag NE
-    ("iw/2-(iw/zoom/2)-(iw-iw/zoom)/3*on/d",   "ih/2-(ih/zoom/2)+(ih-ih/zoom)/3*on/d"),  # 6 diag SW
+# zoompan's x/y expressions do NOT have `d` as a variable (only `on`, `iw`,
+# `ih`, `zoom`, `pzoom`, `x`, `y`, `px`, `py`). To make the pan progress run
+# from 0 -> 1 across the clip, the frame count is substituted into the
+# expression at filter-build time (DUR placeholder -> str(d_frames)).
+_PAN_TEMPLATES = [
+    ("iw/2-(iw/zoom/2)",                                  "ih/2-(ih/zoom/2)"),                                  # 0 static center
+    ("iw/2-(iw/zoom/2)+(iw-iw/zoom)/2*on/DUR",            "ih/2-(ih/zoom/2)"),                                  # 1 pan right
+    ("iw/2-(iw/zoom/2)-(iw-iw/zoom)/2*on/DUR",            "ih/2-(ih/zoom/2)"),                                  # 2 pan left
+    ("iw/2-(iw/zoom/2)",                                  "ih/2-(ih/zoom/2)+(ih-ih/zoom)/2*on/DUR"),            # 3 pan down
+    ("iw/2-(iw/zoom/2)",                                  "ih/2-(ih/zoom/2)-(ih-ih/zoom)/2*on/DUR"),            # 4 pan up
+    ("iw/2-(iw/zoom/2)+(iw-iw/zoom)/3*on/DUR",            "ih/2-(ih/zoom/2)-(ih-ih/zoom)/3*on/DUR"),            # 5 diag NE
+    ("iw/2-(iw/zoom/2)-(iw-iw/zoom)/3*on/DUR",            "ih/2-(ih/zoom/2)+(ih-ih/zoom)/3*on/DUR"),            # 6 diag SW
 ]
 
 
@@ -621,10 +623,14 @@ def _capcut_clip_filter(idx, length_sec, color_grade_filter, flash=False):
     Outputs every clip as 1080x1920 30fps yuv420p so the concat filter
     accepts them. Each clip gets:
       - 1.00 -> 1.45 punch zoom alternating in/out by clip index
-      - Random parallax pan direction (7-way) so motion is never repetitive
-      - Optional one-frame white flash on the first frame (drops on bass hits)
-      - Per-clip subtle exposure variance, sells the "edited" feel
+      - Random parallax pan direction (7-way), pan templates parameterised by
+        the clip's frame count so on/DUR maps to a 0 -> 1 progress sweep
+      - Per-clip subtle exposure + saturation variance, sells the "edited" feel
       - Unified color grade applied AFTER all motion so cuts read as one reel
+
+    `flash` is accepted for caller compatibility but currently a no-op:
+    a per-clip flash would need ffmpeg's `eq=...:eval=frame` and is fragile,
+    so the flash punch is instead applied as a post-concat curve later.
     """
     d_frames = max(1, int(length_sec * 30))
     # Bigger zoom range than v3 (1.30 -> 1.45) so even a 0.20s clip has visible motion
@@ -634,7 +640,10 @@ def _capcut_clip_filter(idx, length_sec, color_grade_filter, flash=False):
         z_expr = "if(eq(on,0),1.45,max(zoom-0.0055,1.00))"
 
     # Deterministic pan-mode pick so retries are stable, but every clip is different
-    pan_x, pan_y = _PAN_MODES[(idx * 3 + 1) % len(_PAN_MODES)]
+    pan_x_t, pan_y_t = _PAN_TEMPLATES[(idx * 3 + 1) % len(_PAN_TEMPLATES)]
+    dur_str = str(max(2, d_frames))  # avoid divide-by-1 making pan instant
+    pan_x = pan_x_t.replace("DUR", dur_str)
+    pan_y = pan_y_t.replace("DUR", dur_str)
 
     chain = [
         "scale=2160:3840:force_original_aspect_ratio=increase",
@@ -649,10 +658,6 @@ def _capcut_clip_filter(idx, length_sec, color_grade_filter, flash=False):
     chain.append("eq=brightness=%.3f:saturation=%.3f" % (bright_jitter, sat_jitter))
     if color_grade_filter:
         chain.append(color_grade_filter)
-    if flash:
-        # White flash on first 2 frames of the clip via brightness ramp.
-        # 'lte(t,0.067)' fires for the first 2 frames at 30fps.
-        chain.append("eq=brightness='if(lte(t,0.067),0.55,0)'")
     chain.append("setsar=1")
     chain.append("format=yuv420p")
     return "[" + str(idx) + ":v]" + ",".join(chain) + "[v" + str(idx) + "]"
