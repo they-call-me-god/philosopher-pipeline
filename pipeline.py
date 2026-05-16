@@ -61,11 +61,13 @@ CACHE_AUDIO = BASE_DIR / "cache" / "audio"
 FONT_PATH = BASE_DIR / "fonts" / "PlayfairDisplay-Regular.ttf"
 GOTHIC_FONT_PATH = BASE_DIR / "fonts" / "UnifrakturMaguntia-Book.ttf"
 
-# Slideshow mix: 12 paintings + 8 portraits = 20 unique images.
-# Beat-synced reels typically produce 18–25 cuts at 7s, so 20 unique
-# images keeps consecutive slides distinct without immediate repeats.
-NUM_PAINTINGS = 12
-NUM_PORTRAITS = 8
+# Slideshow mix: 16 paintings + 12 portraits = 28 unique images.
+# Beat-synced reels produce ~18-25 cuts at 7s, so 28 unique images
+# means every cut is a new image and the viewer never sees the same
+# frame twice inside a single loop. Bumped from 12+8 because the
+# previous mix read as "one image" when paintings fetch under-yielded.
+NUM_PAINTINGS = 16
+NUM_PORTRAITS = 12
 
 
 def _env_bool(name, default=True):
@@ -245,7 +247,7 @@ def main(upload_now=True, single=False, generate_only=False):
                     audio_path, mp4_path, str(FONT_PATH),
                     reel_duration=REEL_DURATION,
                     min_cuts=MIN_CUTS,
-                    seamless_loop=True,
+                    seamless_loop=False,
                     color_grade=COLOR_GRADE,
                     overlay_font_path=str(GOTHIC_FONT_PATH) if GOTHIC_FONT_PATH.exists() else None,
                 )

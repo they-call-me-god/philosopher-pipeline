@@ -602,28 +602,57 @@ def _render_quote_overlay(quote, philosopher, output_path, gothic_font_path, wat
     img.save(output_path, "PNG")
 
 
-def _capcut_clip_filter(idx, length_sec, color_grade_filter):
-    """Per-clip ffmpeg filter chain: scale, alternating zoom punch, color grade.
+_PAN_MODES = [
+    # (x_expr, y_expr) for zoompan. Each is "center +/- offset" of the
+    # original frame, so the visible window slides while it zooms.
+    ("iw/2-(iw/zoom/2)",                       "ih/2-(ih/zoom/2)"),       # 0 center
+    ("iw/2-(iw/zoom/2)+(iw-iw/zoom)/2*on/d",   "ih/2-(ih/zoom/2)"),       # 1 pan right
+    ("iw/2-(iw/zoom/2)-(iw-iw/zoom)/2*on/d",   "ih/2-(ih/zoom/2)"),       # 2 pan left
+    ("iw/2-(iw/zoom/2)",                       "ih/2-(ih/zoom/2)+(ih-ih/zoom)/2*on/d"),  # 3 pan down
+    ("iw/2-(iw/zoom/2)",                       "ih/2-(ih/zoom/2)-(ih-ih/zoom)/2*on/d"),  # 4 pan up
+    ("iw/2-(iw/zoom/2)+(iw-iw/zoom)/3*on/d",   "ih/2-(ih/zoom/2)-(ih-ih/zoom)/3*on/d"),  # 5 diag NE
+    ("iw/2-(iw/zoom/2)-(iw-iw/zoom)/3*on/d",   "ih/2-(ih/zoom/2)+(ih-ih/zoom)/3*on/d"),  # 6 diag SW
+]
 
-    Hard-cut compatible: outputs all clips at identical 1080x1920 30fps
-    yuv420p so the concat filter accepts them. The zoom (1.0 -> 1.30) is
-    bigger than v2 so motion is visible inside even a 0.35s clip.
+
+def _capcut_clip_filter(idx, length_sec, color_grade_filter, flash=False):
+    """Per-clip ffmpeg filter chain, CapCut-style.
+
+    Outputs every clip as 1080x1920 30fps yuv420p so the concat filter
+    accepts them. Each clip gets:
+      - 1.00 -> 1.45 punch zoom alternating in/out by clip index
+      - Random parallax pan direction (7-way) so motion is never repetitive
+      - Optional one-frame white flash on the first frame (drops on bass hits)
+      - Per-clip subtle exposure variance, sells the "edited" feel
+      - Unified color grade applied AFTER all motion so cuts read as one reel
     """
     d_frames = max(1, int(length_sec * 30))
+    # Bigger zoom range than v3 (1.30 -> 1.45) so even a 0.20s clip has visible motion
     if idx % 2 == 0:
-        z_expr = "min(zoom+0.0040,1.30)"
+        z_expr = "min(zoom+0.0055,1.45)"
     else:
-        z_expr = "if(eq(on,0),1.30,max(zoom-0.0040,1.00))"
+        z_expr = "if(eq(on,0),1.45,max(zoom-0.0055,1.00))"
+
+    # Deterministic pan-mode pick so retries are stable, but every clip is different
+    pan_x, pan_y = _PAN_MODES[(idx * 3 + 1) % len(_PAN_MODES)]
 
     chain = [
         "scale=2160:3840:force_original_aspect_ratio=increase",
         "crop=2160:3840",
         ("zoompan=z='" + z_expr + "'"
-         + ":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+         + ":x='" + pan_x + "':y='" + pan_y + "'"
          + ":d=" + str(d_frames) + ":s=1080x1920:fps=30"),
     ]
+    # Per-clip exposure jitter for that hand-cut feel: +/- 4% brightness, +/- 5% saturation
+    bright_jitter = ((idx * 37) % 9 - 4) / 100.0
+    sat_jitter = 1.0 + ((idx * 53) % 11 - 5) / 100.0
+    chain.append("eq=brightness=%.3f:saturation=%.3f" % (bright_jitter, sat_jitter))
     if color_grade_filter:
         chain.append(color_grade_filter)
+    if flash:
+        # White flash on first 2 frames of the clip via brightness ramp.
+        # 'lte(t,0.067)' fires for the first 2 frames at 30fps.
+        chain.append("eq=brightness='if(lte(t,0.067),0.55,0)'")
     chain.append("setsar=1")
     chain.append("format=yuv420p")
     return "[" + str(idx) + ":v]" + ",".join(chain) + "[v" + str(idx) + "]"
@@ -685,12 +714,30 @@ def compose_slideshow_beat_synced(
         cmd += ["-i", str(audio_path)]
         audio_idx = len(chosen_images) + 1
 
+        # Flash punches: every 4th cut + the first and last segment. These
+        # land where the eye expects a "drop" so the reel reads as edited.
+        flash_indices = set([0, len(chosen_images) - 1])
+        flash_indices.update(range(3, len(chosen_images), 4))
+
         parts = []
         for i in range(len(chosen_images)):
-            parts.append(_capcut_clip_filter(i, segments[i], grade_filter))
+            parts.append(_capcut_clip_filter(
+                i, segments[i], grade_filter, flash=(i in flash_indices)
+            ))
         chain_inputs = "".join("[v%d]" % i for i in range(len(chosen_images)))
-        parts.append(chain_inputs + "concat=n=" + str(len(chosen_images)) + ":v=1:a=0[vraw]")
-        parts.append("[vraw][" + str(overlay_idx) + ":v]overlay=0:0:format=auto[vout]")
+        parts.append(chain_inputs + "concat=n=" + str(len(chosen_images)) + ":v=1:a=0[vcat]")
+        # Cinematic finishing chain on the full timeline:
+        #   vignette  -> darken edges, sells filmic feel
+        #   noise     -> subtle film grain (4 alpha, temporal so it moves)
+        #   unsharp   -> micro-sharpening, makes paintings feel HD
+        parts.append(
+            "[vcat]"
+            "vignette=PI/5,"
+            "noise=alls=6:allf=t,"
+            "unsharp=3:3:0.4:3:3:0.0"
+            "[vfin]"
+        )
+        parts.append("[vfin][" + str(overlay_idx) + ":v]overlay=0:0:format=auto[vout]")
 
         cmd += [
             "-filter_complex", ";".join(parts),
