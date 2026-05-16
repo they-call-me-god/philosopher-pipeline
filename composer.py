@@ -465,30 +465,34 @@ def _segments_from_hits(hit_times, target_duration, min_cuts=MIN_CUTS_PER_REEL):
 
 
 def _select_images_for_cuts(image_paths, n_cuts, seamless_loop=True):
-    """Shuffle pool and pick n_cuts images with no back-to-back repeats.
+    """Pick n_cuts images, preserving caller's ordering (FIFO, no shuffle).
+
+    Callers (pipeline.py) hand us a list already interleaved
+    painting-portrait-painting-portrait. Shuffling kills that, so two
+    near-identical B&W portraits of the same philosopher can land
+    back-to-back and read as "one image held for several cuts". FIFO popping
+    preserves the alternation: cut 0 is a painting, cut 1 a portrait,
+    cut 2 a painting, etc., regardless of how many cuts we need.
 
     If seamless_loop=True, the last image equals the first so the IG
     auto-replay boundary is invisible.
     """
-    import random
     if not image_paths:
         return []
     if len(image_paths) == 1:
         return [image_paths[0]] * n_cuts
 
     pool_template = list(image_paths)
-    random.shuffle(pool_template)
     pool = list(pool_template)
     out = []
     last = None
     while len(out) < n_cuts:
         if not pool:
             pool = list(pool_template)
-        # Avoid back-to-back: if the next pick equals last, swap in a different one
-        pick = pool.pop()
+        pick = pool.pop(0)  # FIFO so the interleave order is honored
         if pick == last and pool:
-            alt = pool.pop()
-            pool.insert(0, pick)
+            alt = pool.pop(0)
+            pool.append(pick)  # try `pick` again after the pool cycles
             pick = alt
         out.append(pick)
         last = pick
@@ -710,10 +714,15 @@ def compose_slideshow_beat_synced(
         overlay_png = workdir / "quote_overlay.png"
         _render_quote_overlay(quote, philosopher, str(overlay_png), overlay_font, font_path)
 
-        # 2. ffmpeg: per-clip scale+zoom+grade, concat them, overlay text, mux audio
+        # 2. ffmpeg: per-clip scale+zoom+grade, concat them, overlay text, mux audio.
+        # `-framerate 30` is critical: ffmpeg defaults stills to 25fps, but our
+        # zoompan filter uses d=int(seg*30) frames per cycle. A 25-vs-30 mismatch
+        # caused zoompan to restart its zoom inside a single clip, reading on
+        # screen as 3-4 cuts of the same image before moving on. Locking input
+        # to 30fps means d == input-frame-count, exactly one zoom cycle per clip.
         cmd = ["ffmpeg", "-y", "-loglevel", "error", "-stats"]
         for i, src in enumerate(chosen_images):
-            cmd += ["-loop", "1", "-t", "%.4f" % segments[i], "-i", str(src)]
+            cmd += ["-loop", "1", "-framerate", "30", "-t", "%.4f" % segments[i], "-i", str(src)]
         cmd += ["-i", str(overlay_png)]
         overlay_idx = len(chosen_images)
         cmd += ["-i", str(audio_path)]
