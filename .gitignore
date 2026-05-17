@@ -1,4 +1,7 @@
 .env
+.env.local
+secrets.json
+env_dump.json
 *.session
 session.json
 __pycache__/

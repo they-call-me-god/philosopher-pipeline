@@ -1,0 +1,3 @@
+setup:
+  project: philosopher-pipeline
+  config: dev
