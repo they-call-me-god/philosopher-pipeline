@@ -345,9 +345,12 @@ def compose_reel(image_path, audio_path, output_path, duration=30):
 # (text is no longer rebaked into every JPG). Images shuffled, no back-to-back
 # repeats. Gothic font for the quote when available, fallback otherwise.
 
-MIN_SEGMENT_SECONDS = 0.20
-MAX_SEGMENT_SECONDS = 0.55
-MIN_CUTS_PER_REEL = 16
+# Fast-cut montage pacing. 0.10s is the practical floor: at 30fps that's
+# 3 frames, the minimum at which the eye still registers an individual
+# image vs just a strobe. Going below turns the reel into a blur.
+MIN_SEGMENT_SECONDS = 0.10
+MAX_SEGMENT_SECONDS = 0.28
+MIN_CUTS_PER_REEL = 36
 
 DEFAULT_COLOR_GRADE = "vintage"
 COLOR_GRADES = {

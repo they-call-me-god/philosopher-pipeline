@@ -61,13 +61,12 @@ CACHE_AUDIO = BASE_DIR / "cache" / "audio"
 FONT_PATH = BASE_DIR / "fonts" / "PlayfairDisplay-Regular.ttf"
 GOTHIC_FONT_PATH = BASE_DIR / "fonts" / "UnifrakturMaguntia-Book.ttf"
 
-# Slideshow mix: 16 paintings + 12 portraits = 28 unique images.
-# Beat-synced reels produce ~18-25 cuts at 7s, so 28 unique images
-# means every cut is a new image and the viewer never sees the same
-# frame twice inside a single loop. Bumped from 12+8 because the
-# previous mix read as "one image" when paintings fetch under-yielded.
-NUM_PAINTINGS = 16
-NUM_PORTRAITS = 12
+# Slideshow mix: 24 paintings + 16 portraits = 40 unique images.
+# Composer floors cuts at 0.10s with MIN_CUTS_PER_REEL=36, so a 7s reel
+# produces 35-50 cuts. 40 unique images means every cut is a new image
+# inside a single loop even at the high end. Bumped from 16+12.
+NUM_PAINTINGS = 24
+NUM_PORTRAITS = 16
 
 
 def _env_bool(name, default=True):

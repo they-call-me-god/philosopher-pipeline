@@ -55,7 +55,7 @@ MET_QUERIES = [
 
 # Throttle: Wikimedia documents ~10 req/s as a hard ceiling for unauthenticated
 # scripts; we stay well under it. 429 retries honor Retry-After.
-WIKIMEDIA_THUMB_WIDTH = 1200
+WIKIMEDIA_THUMB_WIDTH = 1800  # was 1200; bigger so upscale to 2160 stays crisp
 WIKIMEDIA_SEARCH_SLEEP = 1.0
 WIKIMEDIA_INFO_SLEEP = 0.5
 DOWNLOAD_SLEEP = 0.25
