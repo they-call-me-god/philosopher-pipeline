@@ -3,6 +3,11 @@
 secrets.json
 env_dump.json
 *.session
+# Local debug/CI artifacts
+catch.py
+debug_output.txt
+run_log.txt
+*.log
 session.json
 __pycache__/
 *.pyc
